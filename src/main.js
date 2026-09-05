@@ -122,3 +122,31 @@ extractTommyternalButton.addEventListener("click", async () => {
     console.error("Tommyternal extraction failed:", err);
   }
 });
+
+const previewInstallButton = document.getElementById("preview-install-tommyternal-btn");
+const previewInstallOutput = document.getElementById("preview-install-output");
+
+previewInstallButton.addEventListener("click", async () => {
+  previewInstallOutput.textContent = "Planning...";
+  try {
+    const { invoke } = window.__TAURI__.core;
+    previewInstallOutput.textContent = await invoke("preview_install_tommyternal");
+  } catch (err) {
+    previewInstallOutput.textContent = `Error: ${err}`;
+    console.error("Preview install failed:", err);
+  }
+});
+
+const installButton = document.getElementById("install-tommyternal-btn");
+const installOutput = document.getElementById("install-output");
+
+installButton.addEventListener("click", async () => {
+  installOutput.textContent = "Installing...";
+  try {
+    const { invoke } = window.__TAURI__.core;
+    installOutput.textContent = await invoke("install_tommyternal");
+  } catch (err) {
+    installOutput.textContent = `Error: ${err}`;
+    console.error("Install failed:", err);
+  }
+});
