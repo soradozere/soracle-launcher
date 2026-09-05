@@ -16,6 +16,15 @@ button.addEventListener("click", async () => {
   }
 });
 
+async function downloadFile(url, filename) {
+  const { fetch } = window.__TAURI__.http;
+  const { writeFile, mkdir, BaseDirectory } = window.__TAURI__.fs;
+  await mkdir("", { baseDir: BaseDirectory.AppData, recursive: true });
+  const res = await fetch(url);
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  await writeFile(filename, bytes, { baseDir: BaseDirectory.AppData });
+}
+
 const NWH_URL = "https://jk2t.ddns.net/nwhfiles/nwh_linux_x64.tar.gz";
 const NWH_FILENAME = "nwh_linux_x64.tar.gz";
 const downloadButton = document.getElementById("download-nwh-btn");
@@ -24,12 +33,7 @@ const downloadOutput = document.getElementById("download-output");
 downloadButton.addEventListener("click", async () => {
   downloadOutput.textContent = "Downloading...";
   try {
-    const { fetch } = window.__TAURI__.http;
-    const { writeFile, mkdir, BaseDirectory } = window.__TAURI__.fs;
-    await mkdir("", { baseDir: BaseDirectory.AppData, recursive: true });
-    const res = await fetch(NWH_URL);
-    const bytes = new Uint8Array(await res.arrayBuffer());
-    await writeFile(NWH_FILENAME, bytes, { baseDir: BaseDirectory.AppData });
+    await downloadFile(NWH_URL, NWH_FILENAME);
     downloadOutput.textContent = `Saved ${NWH_FILENAME} to the app data directory.`;
     console.log("Download complete:", NWH_FILENAME);
   } catch (err) {
@@ -83,5 +87,38 @@ locateBaseButton.addEventListener("click", async () => {
   } catch (err) {
     locateBaseOutput.textContent = `Error locating base folder: ${err}`;
     console.error("Locate base failed:", err);
+  }
+});
+
+const TOMMYTERNAL_URL = "https://github.com/TomArrow/jk2mv/releases/download/latest-postxp/macOS.Package.Portable.Release.arm64.zip";
+const TOMMYTERNAL_FILENAME = "tommyternal_macos_arm64.zip";
+const downloadTommyternalButton = document.getElementById("download-tommyternal-btn");
+const downloadTommyternalOutput = document.getElementById("download-tommyternal-output");
+
+downloadTommyternalButton.addEventListener("click", async () => {
+  downloadTommyternalOutput.textContent = "Downloading...";
+  try {
+    await downloadFile(TOMMYTERNAL_URL, TOMMYTERNAL_FILENAME);
+    downloadTommyternalOutput.textContent = `Saved ${TOMMYTERNAL_FILENAME} to the app data directory.`;
+    console.log("Download complete:", TOMMYTERNAL_FILENAME);
+  } catch (err) {
+    downloadTommyternalOutput.textContent = `Error downloading: ${err}`;
+    console.error("Tommyternal download failed:", err);
+  }
+});
+
+const extractTommyternalButton = document.getElementById("extract-tommyternal-btn");
+const extractTommyternalOutput = document.getElementById("extract-tommyternal-output");
+
+extractTommyternalButton.addEventListener("click", async () => {
+  extractTommyternalOutput.textContent = "Extracting...";
+  try {
+    const { invoke } = window.__TAURI__.core;
+    const result = await invoke("extract_tommyternal");
+    extractTommyternalOutput.textContent = result;
+    console.log("Tommyternal extraction complete:", result);
+  } catch (err) {
+    extractTommyternalOutput.textContent = `Error extracting: ${err}`;
+    console.error("Tommyternal extraction failed:", err);
   }
 });

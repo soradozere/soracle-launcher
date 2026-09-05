@@ -14,6 +14,21 @@ fn extract_nwh(app: tauri::AppHandle) -> Result<String, String> {
     Ok(format!("Extracted to {}", dest.display()))
 }
 
+#[tauri::command]
+fn extract_tommyternal(app: tauri::AppHandle) -> Result<String, String> {
+    let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let zip_path = app_data.join("tommyternal_macos_arm64.zip");
+    let dest = app_data.join("extracted").join("tommyternal");
+
+    let zip_file = std::fs::File::open(&zip_path).map_err(|e| e.to_string())?;
+    let mut zip_archive = zip::ZipArchive::new(zip_file).map_err(|e| e.to_string())?;
+    let inner_targz = zip_archive.by_index(0).map_err(|e| e.to_string())?;
+    let gz = flate2::read::GzDecoder::new(inner_targz);
+    tar::Archive::new(gz).unpack(&dest).map_err(|e| e.to_string())?;
+
+    Ok(format!("Extracted to {}", dest.display()))
+}
+
 const JK2_STEAM_APP_ID: u32 = 6030;
 
 fn find_jk2_install() -> Result<std::path::PathBuf, String> {
@@ -62,7 +77,12 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_fs::init())
-        .invoke_handler(tauri::generate_handler![extract_nwh, locate_jk2, locate_jk2_base])
+        .invoke_handler(tauri::generate_handler![
+            extract_nwh,
+            extract_tommyternal,
+            locate_jk2,
+            locate_jk2_base
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
