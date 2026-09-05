@@ -42,6 +42,43 @@ fn extract_openjo(app: tauri::AppHandle) -> Result<String, String> {
     Ok(format!("Extracted to {}", dest.display()))
 }
 
+#[tauri::command]
+fn extract_jk2mv(app: tauri::AppHandle) -> Result<String, String> {
+    let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let dmg_path = app_data.join("jk2mv_macos_x86_64.dmg");
+    let mount_point = app_data.join("dmg_mount_jk2mv");
+    let dest = app_data.join("extracted").join("jk2mv");
+
+    // Defensive: clear any stale mount left by a previous crashed attempt.
+    let _ = std::process::Command::new("hdiutil")
+        .args(["detach", mount_point.to_str().unwrap()])
+        .output();
+    std::fs::create_dir_all(&mount_point).map_err(|e| e.to_string())?;
+
+    let attach = std::process::Command::new("hdiutil")
+        .args([
+            "attach",
+            dmg_path.to_str().unwrap(),
+            "-nobrowse",
+            "-mountpoint",
+            mount_point.to_str().unwrap(),
+        ])
+        .status()
+        .map_err(|e| e.to_string())?;
+    if !attach.success() {
+        return Err("hdiutil attach failed".to_string());
+    }
+
+    let copy_result = copy_dir_recursive(&mount_point.join("jk2mvmp.app"), &dest.join("jk2mvmp.app"));
+
+    let _ = std::process::Command::new("hdiutil")
+        .args(["detach", mount_point.to_str().unwrap()])
+        .status();
+
+    copy_result?;
+    Ok(format!("Extracted to {}", dest.display()))
+}
+
 const JK2_STEAM_APP_ID: u32 = 6030;
 
 fn find_jk2_install() -> Result<std::path::PathBuf, String> {
@@ -377,6 +414,46 @@ fn play_openjo() -> Result<String, String> {
     Ok(format!("Launched {}", app_bundle.display()))
 }
 
+const JK2MV_MOD_ID: &str = "jk2mv";
+
+fn resolve_jk2mv_install(
+    app: &tauri::AppHandle,
+) -> Result<(std::path::PathBuf, std::path::PathBuf, std::path::PathBuf), String> {
+    let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let payload_dir = app_data.join("extracted").join("jk2mv");
+    let (base_dir, game_root) = find_jk2_base_and_root()?;
+    Ok((payload_dir, base_dir, game_root))
+}
+
+#[tauri::command]
+fn preview_install_jk2mv(app: tauri::AppHandle) -> Result<String, String> {
+    let (payload_dir, base_dir, game_root) = resolve_jk2mv_install(&app)?;
+    preview_install(JK2MV_MOD_ID, &payload_dir, &base_dir, &game_root)
+}
+
+#[tauri::command]
+fn install_jk2mv(app: tauri::AppHandle) -> Result<String, String> {
+    let (payload_dir, base_dir, game_root) = resolve_jk2mv_install(&app)?;
+    install_mod(JK2MV_MOD_ID, &payload_dir, &base_dir, &game_root)
+}
+
+#[tauri::command]
+fn is_jk2mv_installed() -> Result<bool, String> {
+    let (_, game_root) = find_jk2_base_and_root()?;
+    Ok(is_mod_installed(JK2MV_MOD_ID, &game_root))
+}
+
+#[tauri::command]
+fn play_jk2mv() -> Result<String, String> {
+    let (_, game_root) = find_jk2_base_and_root()?;
+    let app_bundle = game_root.join("jk2mvmp.app");
+    std::process::Command::new("open")
+        .arg(&app_bundle)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(format!("Launched {}", app_bundle.display()))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -387,6 +464,7 @@ pub fn run() {
             extract_nwh,
             extract_tommyternal,
             extract_openjo,
+            extract_jk2mv,
             locate_jk2,
             locate_jk2_base,
             preview_install_tommyternal,
@@ -396,7 +474,11 @@ pub fn run() {
             preview_install_openjo,
             install_openjo,
             is_openjo_installed,
-            play_openjo
+            play_openjo,
+            preview_install_jk2mv,
+            install_jk2mv,
+            is_jk2mv_installed,
+            play_jk2mv
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

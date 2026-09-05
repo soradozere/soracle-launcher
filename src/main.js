@@ -15,6 +15,13 @@ const MOD_HANDLERS = {
     checkInstalledCommand: "is_openjo_installed",
     playCommand: "play_openjo",
   },
+  JK2MV: {
+    filename: "jk2mv_macos_x86_64.dmg",
+    extractCommand: "extract_jk2mv",
+    installCommand: "install_jk2mv",
+    checkInstalledCommand: "is_jk2mv_installed",
+    playCommand: "play_jk2mv",
+  },
 };
 
 let mods = [];
