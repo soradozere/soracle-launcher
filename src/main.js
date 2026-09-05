@@ -27,7 +27,8 @@ downloadButton.addEventListener("click", async () => {
     const { fetch } = window.__TAURI__.http;
     const { writeFile, BaseDirectory } = window.__TAURI__.fs;
     const res = await fetch(NWH_URL);
-    await writeFile(NWH_FILENAME, res.body, { baseDir: BaseDirectory.AppData });
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    await writeFile(NWH_FILENAME, bytes, { baseDir: BaseDirectory.AppData });
     downloadOutput.textContent = `Saved ${NWH_FILENAME} to the app data directory.`;
     console.log("Download complete:", NWH_FILENAME);
   } catch (err) {
