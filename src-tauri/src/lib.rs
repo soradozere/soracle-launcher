@@ -204,18 +204,46 @@ fn copy_dir_recursive(src: &std::path::Path, dest: &std::path::Path) -> Result<(
     Ok(())
 }
 
-fn resolve_tommyternal_install(
-    app: &tauri::AppHandle,
-) -> Result<(std::path::PathBuf, std::path::PathBuf, std::path::PathBuf), String> {
-    let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let payload_dir = find_single_subdir(&app_data.join("extracted").join("tommyternal"))?;
+fn find_jk2_base_and_root() -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
     let install_root = find_jk2_install()?;
     let base_dir = find_base_dir(&install_root)?;
     let game_root = base_dir
         .parent()
         .ok_or_else(|| "base folder has no parent directory".to_string())?
         .to_path_buf();
+    Ok((base_dir, game_root))
+}
+
+fn resolve_tommyternal_install(
+    app: &tauri::AppHandle,
+) -> Result<(std::path::PathBuf, std::path::PathBuf, std::path::PathBuf), String> {
+    let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let payload_dir = find_single_subdir(&app_data.join("extracted").join("tommyternal"))?;
+    let (base_dir, game_root) = find_jk2_base_and_root()?;
     Ok((payload_dir, base_dir, game_root))
+}
+
+#[tauri::command]
+fn is_tommyternal_installed() -> Result<bool, String> {
+    let (_, game_root) = find_jk2_base_and_root()?;
+    Ok(load_installed_mods(&game_root)
+        .get(TOMMYTERNAL_MOD_ID)
+        .map(|paths| !paths.is_empty())
+        .unwrap_or(false))
+}
+
+#[tauri::command]
+fn play_tommyternal() -> Result<String, String> {
+    let (_, game_root) = find_jk2_base_and_root()?;
+    let binary = game_root.join("eternaljk2mvmp");
+    let mut child = std::process::Command::new(&binary)
+        .current_dir(&game_root)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(format!("Launched {}", binary.display()))
 }
 
 #[tauri::command]
@@ -286,7 +314,9 @@ pub fn run() {
             locate_jk2,
             locate_jk2_base,
             preview_install_tommyternal,
-            install_tommyternal
+            install_tommyternal,
+            is_tommyternal_installed,
+            play_tommyternal
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

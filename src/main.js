@@ -1,20 +1,17 @@
 const MANIFEST_URL = "https://gist.githubusercontent.com/soradozere/a5ac8df67ac85687d20b4901ae1f1af0/raw/manifest.json";
-const button = document.getElementById("fetch-manifest-btn");
-const output = document.getElementById("manifest-output");
 
-button.addEventListener("click", async () => {
-  output.textContent = "Fetching...";
-  try {
-    const { fetch } = window.__TAURI__.http;
-    const res = await fetch(MANIFEST_URL);
-    const data = await res.json();
-    output.textContent = JSON.stringify(data, null, 2);
-    console.log("Manifest fetched:", data);
-  } catch (err) {
-    output.textContent = `Error fetching manifest: ${err}`;
-    console.error("Manifest fetch failed:", err);
-  }
-});
+const MOD_HANDLERS = {
+  TommyternalJK2MV: {
+    filename: "tommyternal_macos_arm64.zip",
+    extractCommand: "extract_tommyternal",
+    installCommand: "install_tommyternal",
+    checkInstalledCommand: "is_tommyternal_installed",
+    playCommand: "play_tommyternal",
+  },
+};
+
+let mods = [];
+let modState = {};
 
 async function downloadFile(url, filename) {
   const { fetch } = window.__TAURI__.http;
@@ -25,128 +22,91 @@ async function downloadFile(url, filename) {
   await writeFile(filename, bytes, { baseDir: BaseDirectory.AppData });
 }
 
-const NWH_URL = "https://jk2t.ddns.net/nwhfiles/nwh_linux_x64.tar.gz";
-const NWH_FILENAME = "nwh_linux_x64.tar.gz";
-const downloadButton = document.getElementById("download-nwh-btn");
-const downloadOutput = document.getElementById("download-output");
-
-downloadButton.addEventListener("click", async () => {
-  downloadOutput.textContent = "Downloading...";
-  try {
-    await downloadFile(NWH_URL, NWH_FILENAME);
-    downloadOutput.textContent = `Saved ${NWH_FILENAME} to the app data directory.`;
-    console.log("Download complete:", NWH_FILENAME);
-  } catch (err) {
-    downloadOutput.textContent = `Error downloading: ${err}`;
-    console.error("Download failed:", err);
+function renderCard(mod) {
+  const handler = MOD_HANDLERS[mod.name];
+  const state = modState[mod.name] || {};
+  let actions = `<span class="mod-badge">Not yet supported</span>`;
+  if (handler) {
+    actions = state.installed
+      ? `<button data-action="update" data-mod="${mod.name}" ${state.busy ? "disabled" : ""}>Update</button>
+         <button data-action="play" data-mod="${mod.name}" ${state.busy ? "disabled" : ""}>Play</button>`
+      : `<button data-action="install" data-mod="${mod.name}" ${state.busy ? "disabled" : ""}>Install</button>`;
   }
+  return `<div class="mod-card" id="mod-card-${mod.name}">
+    <div class="mod-card-header"><span class="mod-name">${mod.name}</span><span class="mod-version">${mod.version}</span></div>
+    <div class="mod-card-actions">${actions}</div>
+    <div class="mod-card-status">${state.message ?? ""}</div>
+  </div>`;
+}
+
+function updateCard(name) {
+  document.getElementById(`mod-card-${name}`).outerHTML = renderCard(mods.find((m) => m.name === name));
+}
+
+async function handleAction(name, action) {
+  const handler = MOD_HANDLERS[name];
+  const mod = mods.find((m) => m.name === name);
+  const { invoke } = window.__TAURI__.core;
+  modState[name] = { ...modState[name], busy: true, message: "Working..." };
+  updateCard(name);
+  try {
+    if (action === "install" || action === "update") {
+      modState[name].message = "Downloading...";
+      updateCard(name);
+      await downloadFile(mod.url, handler.filename);
+      modState[name].message = "Extracting...";
+      updateCard(name);
+      await invoke(handler.extractCommand);
+      modState[name].message = "Installing...";
+      updateCard(name);
+      await invoke(handler.installCommand);
+      modState[name].installed = true;
+      modState[name].message = "Done.";
+    } else if (action === "play") {
+      modState[name].message = "Launching...";
+      updateCard(name);
+      const result = await invoke(handler.playCommand);
+      modState[name].message = result;
+    }
+  } catch (err) {
+    modState[name].message = `Error: ${err}`;
+    console.error(`${action} failed for ${name}:`, err);
+  } finally {
+    modState[name].busy = false;
+    updateCard(name);
+  }
+}
+
+async function init() {
+  const modsListEl = document.getElementById("mods-list");
+  try {
+    const { fetch } = window.__TAURI__.http;
+    const res = await fetch(MANIFEST_URL);
+    mods = (await res.json()).mods;
+  } catch (err) {
+    modsListEl.textContent = `Error loading manifest: ${err}`;
+    console.error("Manifest fetch failed:", err);
+    return;
+  }
+
+  const { invoke } = window.__TAURI__.core;
+  for (const mod of mods) {
+    const handler = MOD_HANDLERS[mod.name];
+    if (handler) {
+      try {
+        modState[mod.name] = { installed: await invoke(handler.checkInstalledCommand) };
+      } catch (err) {
+        modState[mod.name] = { installed: false };
+      }
+    }
+  }
+
+  modsListEl.innerHTML = mods.map(renderCard).join("");
+}
+
+document.getElementById("mods-list").addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-action]");
+  if (btn) handleAction(btn.dataset.mod, btn.dataset.action);
 });
 
-const extractButton = document.getElementById("extract-nwh-btn");
-const extractOutput = document.getElementById("extract-output");
-
-extractButton.addEventListener("click", async () => {
-  extractOutput.textContent = "Extracting...";
-  try {
-    const { invoke } = window.__TAURI__.core;
-    const result = await invoke("extract_nwh");
-    extractOutput.textContent = result;
-    console.log("Extraction complete:", result);
-  } catch (err) {
-    extractOutput.textContent = `Error extracting: ${err}`;
-    console.error("Extraction failed:", err);
-  }
-});
-
-const locateButton = document.getElementById("locate-jk2-btn");
-const locateOutput = document.getElementById("locate-output");
-
-locateButton.addEventListener("click", async () => {
-  locateOutput.textContent = "Locating...";
-  try {
-    const { invoke } = window.__TAURI__.core;
-    const result = await invoke("locate_jk2");
-    locateOutput.textContent = result;
-    console.log("Locate result:", result);
-  } catch (err) {
-    locateOutput.textContent = `Error locating JK2: ${err}`;
-    console.error("Locate failed:", err);
-  }
-});
-
-const locateBaseButton = document.getElementById("locate-jk2-base-btn");
-const locateBaseOutput = document.getElementById("locate-base-output");
-
-locateBaseButton.addEventListener("click", async () => {
-  locateBaseOutput.textContent = "Locating...";
-  try {
-    const { invoke } = window.__TAURI__.core;
-    const result = await invoke("locate_jk2_base");
-    locateBaseOutput.textContent = result;
-    console.log("Locate base result:", result);
-  } catch (err) {
-    locateBaseOutput.textContent = `Error locating base folder: ${err}`;
-    console.error("Locate base failed:", err);
-  }
-});
-
-const TOMMYTERNAL_URL = "https://github.com/TomArrow/jk2mv/releases/download/latest-postxp/macOS.Package.Portable.Release.arm64.zip";
-const TOMMYTERNAL_FILENAME = "tommyternal_macos_arm64.zip";
-const downloadTommyternalButton = document.getElementById("download-tommyternal-btn");
-const downloadTommyternalOutput = document.getElementById("download-tommyternal-output");
-
-downloadTommyternalButton.addEventListener("click", async () => {
-  downloadTommyternalOutput.textContent = "Downloading...";
-  try {
-    await downloadFile(TOMMYTERNAL_URL, TOMMYTERNAL_FILENAME);
-    downloadTommyternalOutput.textContent = `Saved ${TOMMYTERNAL_FILENAME} to the app data directory.`;
-    console.log("Download complete:", TOMMYTERNAL_FILENAME);
-  } catch (err) {
-    downloadTommyternalOutput.textContent = `Error downloading: ${err}`;
-    console.error("Tommyternal download failed:", err);
-  }
-});
-
-const extractTommyternalButton = document.getElementById("extract-tommyternal-btn");
-const extractTommyternalOutput = document.getElementById("extract-tommyternal-output");
-
-extractTommyternalButton.addEventListener("click", async () => {
-  extractTommyternalOutput.textContent = "Extracting...";
-  try {
-    const { invoke } = window.__TAURI__.core;
-    const result = await invoke("extract_tommyternal");
-    extractTommyternalOutput.textContent = result;
-    console.log("Tommyternal extraction complete:", result);
-  } catch (err) {
-    extractTommyternalOutput.textContent = `Error extracting: ${err}`;
-    console.error("Tommyternal extraction failed:", err);
-  }
-});
-
-const previewInstallButton = document.getElementById("preview-install-tommyternal-btn");
-const previewInstallOutput = document.getElementById("preview-install-output");
-
-previewInstallButton.addEventListener("click", async () => {
-  previewInstallOutput.textContent = "Planning...";
-  try {
-    const { invoke } = window.__TAURI__.core;
-    previewInstallOutput.textContent = await invoke("preview_install_tommyternal");
-  } catch (err) {
-    previewInstallOutput.textContent = `Error: ${err}`;
-    console.error("Preview install failed:", err);
-  }
-});
-
-const installButton = document.getElementById("install-tommyternal-btn");
-const installOutput = document.getElementById("install-output");
-
-installButton.addEventListener("click", async () => {
-  installOutput.textContent = "Installing...";
-  try {
-    const { invoke } = window.__TAURI__.core;
-    installOutput.textContent = await invoke("install_tommyternal");
-  } catch (err) {
-    installOutput.textContent = `Error: ${err}`;
-    console.error("Install failed:", err);
-  }
-});
+init();

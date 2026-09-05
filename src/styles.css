@@ -15,9 +15,92 @@ body {
   margin: 0;
 }
 
+header {
+  padding: 1.5rem 2rem 0;
+}
+
+header h1 {
+  font-size: 1.4rem;
+  margin: 0;
+}
+
+.mods-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  max-width: 480px;
+  margin: 1.5rem auto;
+  padding: 0 2rem;
+}
+
+.mod-card {
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  background-color: rgba(0, 0, 0, 0.03);
+}
+
+.mod-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.mod-name {
+  font-weight: 600;
+}
+
+.mod-version {
+  font-size: 0.85rem;
+  opacity: 0.6;
+}
+
+.mod-card-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.mod-card-actions button {
+  padding: 0.4rem 0.9rem;
+  border-radius: 6px;
+  border: 1px solid rgba(0, 0, 0, 0.2);
+  background-color: rgba(0, 0, 0, 0.06);
+  cursor: pointer;
+}
+
+.mod-card-actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.mod-badge {
+  font-size: 0.85rem;
+  font-style: italic;
+  opacity: 0.6;
+}
+
+.mod-card-status {
+  font-size: 0.85rem;
+  opacity: 0.7;
+  font-style: italic;
+  margin-top: 0.35rem;
+  min-height: 1.1em;
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     color: #f6f6f6;
     background-color: #2f2f2f;
+  }
+
+  .mod-card {
+    border-color: rgba(255, 255, 255, 0.15);
+    background-color: rgba(255, 255, 255, 0.05);
+  }
+
+  .mod-card-actions button {
+    border-color: rgba(255, 255, 255, 0.25);
+    background-color: rgba(255, 255, 255, 0.08);
   }
 }
