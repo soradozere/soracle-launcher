@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Soracle Launcher",
+  "productName": "JK2 Launcher",
   "version": "0.1.0",
   "identifier": "com.soracle.launcher",
   "build": {
@@ -10,9 +10,9 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "Soracle Launcher",
-        "width": 800,
-        "height": 600
+        "title": "JK2 Launcher",
+        "width": 900,
+        "height": 620
       }
     ],
     "security": {

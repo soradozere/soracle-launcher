@@ -2,14 +2,44 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="styles.css" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Soracle Launcher</title>
+    <title>JK2 Launcher</title>
     <script type="module" src="/main.js" defer></script>
   </head>
 
   <body>
-    <header><h1>Soracle Launcher</h1></header>
-    <main id="mods-list" class="mods-list"><p>Loading mods...</p></main>
+    <div class="window">
+      <div class="titlebar">
+        <h1>JK2 Launcher</h1>
+        <span class="version-badge">v0.1 preview</span>
+      </div>
+
+      <div class="body">
+        <div class="sidebar">
+          <div class="sidebar-section">
+            <p class="sidebar-label">Game Folder</p>
+            <div class="game-folder-row">
+              <span class="status-dot" id="game-folder-status"></span>
+              <button id="change-folder-btn" class="change-folder">Change...</button>
+            </div>
+          </div>
+
+          <div class="sidebar-divider"></div>
+
+          <div class="sidebar-section sidebar-section-tight">
+            <p class="sidebar-label">Clients</p>
+          </div>
+          <div class="client-list" id="client-list"><p class="sidebar-loading">Loading...</p></div>
+        </div>
+
+        <main class="main" id="main">
+          <div class="main-empty">Select a client</div>
+        </main>
+      </div>
+    </div>
   </body>
 </html>

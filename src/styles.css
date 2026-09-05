@@ -1,112 +1,288 @@
 :root {
-  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-  font-size: 16px;
-  line-height: 24px;
-  font-weight: 400;
-  color: #0f0f0f;
-  background-color: #f6f6f6;
+  --bg: #0b0c10;
+  --titlebar: #101216;
+  --surface: #16181d;
+  --surface-elevated: #1f2228;
+  --border: #2a2e35;
+  --border-hover: #45a29e;
+  --primary: #66fcf1;
+  --primary-dim: #45a29e;
+  --text: #c5c6c7;
+  --text-bright: #ffffff;
+  --text-dim: #6b7280;
+  --success: #3ddc84;
+  --danger: #ff5f5f;
+
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Avenir, Helvetica, Arial, sans-serif;
+  font-size: 14px;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  color: var(--text);
+  background-color: var(--bg);
+}
+
+* {
+  box-sizing: border-box;
 }
 
 body {
   margin: 0;
 }
 
-header {
-  padding: 1.5rem 2rem 0;
-}
-
-header h1 {
-  font-size: 1.4rem;
-  margin: 0;
-}
-
-.mods-list {
+.window {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
-  max-width: 480px;
-  margin: 1.5rem auto;
-  padding: 0 2rem;
+  height: 100vh;
 }
 
-.mod-card {
-  border: 1px solid rgba(0, 0, 0, 0.15);
-  border-radius: 8px;
-  padding: 0.75rem 1rem;
-  background-color: rgba(0, 0, 0, 0.03);
-}
-
-.mod-card-header {
+.titlebar {
   display: flex;
-  justify-content: space-between;
-  align-items: baseline;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  height: 44px;
+  flex-shrink: 0;
+  background: var(--titlebar);
+  border-bottom: 1px solid var(--border);
 }
 
-.mod-name {
+.titlebar h1 {
+  font-size: 0.95rem;
   font-weight: 600;
+  color: var(--text-bright);
+  margin: 0;
+  letter-spacing: 0.01em;
 }
 
-.mod-version {
-  font-size: 0.85rem;
-  opacity: 0.6;
+.version-badge {
+  position: absolute;
+  right: 1rem;
+  font-family: "SF Mono", ui-monospace, Menlo, monospace;
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0.15rem 0.5rem;
 }
 
-.mod-description {
-  font-size: 0.9rem;
-  opacity: 0.8;
-  margin: 0.4rem 0 0;
-}
-
-.mod-card-actions {
+.body {
   display: flex;
-  gap: 0.5rem;
-  margin-top: 0.5rem;
+  flex: 1;
+  min-height: 0;
 }
 
-.mod-card-actions button {
-  padding: 0.4rem 0.9rem;
+.sidebar {
+  width: 260px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--border);
+  padding: 1.1rem 0;
+  overflow-y: auto;
+}
+
+.sidebar-section {
+  padding: 0 1.1rem 1.1rem;
+}
+
+.sidebar-section-tight {
+  padding-bottom: 0.6rem;
+}
+
+.sidebar-label {
+  font-family: "SF Mono", ui-monospace, Menlo, monospace;
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  margin: 0 0 0.6rem;
+}
+
+.sidebar-loading {
+  padding: 0 1.1rem;
+  font-size: 0.8rem;
+  color: var(--text-dim);
+}
+
+.game-folder-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--success);
+  flex-shrink: 0;
+  box-shadow: 0 0 6px var(--success);
+}
+
+.status-dot.missing {
+  background: var(--danger);
+  box-shadow: 0 0 6px var(--danger);
+}
+
+button.change-folder {
+  font-family: inherit;
+  font-size: 0.82rem;
+  color: var(--text-bright);
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
   border-radius: 6px;
-  border: 1px solid rgba(0, 0, 0, 0.2);
-  background-color: rgba(0, 0, 0, 0.06);
+  padding: 0.4rem 0.7rem;
   cursor: pointer;
 }
 
-.mod-card-actions button:disabled {
+button.change-folder:hover {
+  border-color: var(--border-hover);
+}
+
+.sidebar-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 0 1.1rem 1.1rem;
+}
+
+.client-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0 0.6rem;
+}
+
+.client-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.5rem 0.6rem;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+
+.client-row:hover {
+  background: var(--surface);
+}
+
+.client-row.active {
+  background: var(--surface-elevated);
+  border-color: var(--border);
+}
+
+.client-row-name {
+  font-size: 0.85rem;
+  color: var(--text);
+}
+
+.client-row.active .client-row-name {
+  color: var(--text-bright);
+  font-weight: 500;
+}
+
+.client-row-status {
+  font-size: 0.68rem;
+  color: var(--text-dim);
+  font-family: "SF Mono", ui-monospace, Menlo, monospace;
+}
+
+.client-row.installed .client-row-status {
+  color: var(--primary-dim);
+}
+
+.main {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 2rem 2.5rem;
+}
+
+.main-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-dim);
+  font-size: 0.9rem;
+}
+
+.detail-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+}
+
+.detail-header h2 {
+  font-size: 1.3rem;
+  font-weight: 600;
+  color: var(--text-bright);
+  margin: 0;
+}
+
+.detail-version {
+  font-family: "SF Mono", ui-monospace, Menlo, monospace;
+  font-size: 0.8rem;
+  color: var(--text-dim);
+}
+
+.detail-description {
+  font-size: 0.92rem;
+  line-height: 1.55;
+  color: var(--text);
+  opacity: 0.9;
+  max-width: 60ch;
+  margin: 0 0 1.5rem;
+}
+
+.detail-actions {
+  display: flex;
+  gap: 0.6rem;
+  margin-bottom: 0.75rem;
+}
+
+.detail-actions button {
+  font-family: inherit;
+  font-size: 0.88rem;
+  font-weight: 500;
+  color: var(--text-bright);
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 0.55rem 1.2rem;
+  cursor: pointer;
+}
+
+.detail-actions button:hover:not(:disabled) {
+  border-color: var(--border-hover);
+}
+
+.detail-actions button:disabled {
   opacity: 0.5;
   cursor: default;
 }
 
-.mod-badge {
-  font-size: 0.85rem;
-  font-style: italic;
-  opacity: 0.6;
+.detail-actions button[data-action="play"] {
+  color: var(--primary);
+  border-color: var(--primary-dim);
 }
 
-.mod-card-status {
-  font-size: 0.85rem;
-  opacity: 0.7;
-  font-style: italic;
-  margin-top: 0.35rem;
+.detail-actions button[data-action="play"]:hover:not(:disabled) {
+  background: var(--primary-dim);
+  color: var(--bg);
+}
+
+.detail-status {
+  font-size: 0.8rem;
+  color: var(--text-dim);
   min-height: 1.1em;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    color: #f6f6f6;
-    background-color: #2f2f2f;
-  }
-
-  .mod-card {
-    border-color: rgba(255, 255, 255, 0.15);
-    background-color: rgba(255, 255, 255, 0.05);
-  }
-
-  .mod-card-actions button {
-    border-color: rgba(255, 255, 255, 0.25);
-    background-color: rgba(255, 255, 255, 0.08);
-  }
+.detail-badge {
+  display: inline-block;
+  font-size: 0.85rem;
+  font-style: italic;
+  color: var(--text-dim);
 }

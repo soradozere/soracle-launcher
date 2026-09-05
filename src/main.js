@@ -12,6 +12,7 @@ const MOD_HANDLERS = {
 
 let mods = [];
 let modState = {};
+let selected = null;
 
 async function downloadFile(url, filename) {
   const { fetch } = window.__TAURI__.http;
@@ -22,26 +23,44 @@ async function downloadFile(url, filename) {
   await writeFile(filename, bytes, { baseDir: BaseDirectory.AppData });
 }
 
-function renderCard(mod) {
-  const handler = MOD_HANDLERS[mod.name];
-  const state = modState[mod.name] || {};
-  let actions = `<span class="mod-badge">Not yet supported</span>`;
-  if (handler) {
-    actions = state.installed
-      ? `<button data-action="update" data-mod="${mod.name}" ${state.busy ? "disabled" : ""}>Update</button>
-         <button data-action="play" data-mod="${mod.name}" ${state.busy ? "disabled" : ""}>Play</button>`
-      : `<button data-action="install" data-mod="${mod.name}" ${state.busy ? "disabled" : ""}>Install</button>`;
-  }
-  return `<div class="mod-card" id="mod-card-${mod.name}">
-    <div class="mod-card-header"><span class="mod-name">${mod.name}</span><span class="mod-version">${mod.version}</span></div>
-    <p class="mod-description">${mod.description ?? ""}</p>
-    <div class="mod-card-actions">${actions}</div>
-    <div class="mod-card-status">${state.message ?? ""}</div>
-  </div>`;
+function renderSidebar() {
+  document.getElementById("client-list").innerHTML = mods
+    .map((mod) => {
+      const state = modState[mod.name] || {};
+      const status = state.installed ? "installed" : MOD_HANDLERS[mod.name] ? "" : "unsupported";
+      const classes = ["client-row", mod.name === selected ? "active" : "", state.installed ? "installed" : ""]
+        .filter(Boolean)
+        .join(" ");
+      return `<div class="${classes}" data-name="${mod.name}">
+        <span class="client-row-name">${mod.name}</span>
+        <span class="client-row-status">${status}</span>
+      </div>`;
+    })
+    .join("");
 }
 
-function updateCard(name) {
-  document.getElementById(`mod-card-${name}`).outerHTML = renderCard(mods.find((m) => m.name === name));
+function renderMain() {
+  const mainEl = document.getElementById("main");
+  const mod = mods.find((m) => m.name === selected);
+  if (!mod) {
+    mainEl.innerHTML = `<div class="main-empty">Select a client</div>`;
+    return;
+  }
+  const handler = MOD_HANDLERS[mod.name];
+  const state = modState[mod.name] || {};
+  let actions = `<span class="detail-badge">Not yet supported</span>`;
+  if (handler) {
+    actions = state.installed
+      ? `<button data-action="update" ${state.busy ? "disabled" : ""}>Update</button>
+         <button data-action="play" ${state.busy ? "disabled" : ""}>Play</button>`
+      : `<button data-action="install" ${state.busy ? "disabled" : ""}>Install</button>`;
+  }
+  mainEl.innerHTML = `
+    <div class="detail-header"><h2>${mod.name}</h2><span class="detail-version">${mod.version}</span></div>
+    <p class="detail-description">${mod.description ?? ""}</p>
+    <div class="detail-actions">${actions}</div>
+    <p class="detail-status">${state.message ?? ""}</p>
+  `;
 }
 
 async function handleAction(name, action) {
@@ -49,43 +68,64 @@ async function handleAction(name, action) {
   const mod = mods.find((m) => m.name === name);
   const { invoke } = window.__TAURI__.core;
   modState[name] = { ...modState[name], busy: true, message: "Working..." };
-  updateCard(name);
+  renderSidebar();
+  renderMain();
   try {
     if (action === "install" || action === "update") {
       modState[name].message = "Downloading...";
-      updateCard(name);
+      renderMain();
       await downloadFile(mod.url, handler.filename);
       modState[name].message = "Extracting...";
-      updateCard(name);
+      renderMain();
       await invoke(handler.extractCommand);
       modState[name].message = "Installing...";
-      updateCard(name);
+      renderMain();
       await invoke(handler.installCommand);
       modState[name].installed = true;
       modState[name].message = "Done.";
     } else if (action === "play") {
       modState[name].message = "Launching...";
-      updateCard(name);
-      const result = await invoke(handler.playCommand);
-      modState[name].message = result;
+      renderMain();
+      modState[name].message = await invoke(handler.playCommand);
     }
   } catch (err) {
     modState[name].message = `Error: ${err}`;
     console.error(`${action} failed for ${name}:`, err);
   } finally {
     modState[name].busy = false;
-    updateCard(name);
+    renderSidebar();
+    renderMain();
+  }
+}
+
+function selectClient(name) {
+  selected = name;
+  renderSidebar();
+  renderMain();
+}
+
+async function checkGameFolder() {
+  const dot = document.getElementById("game-folder-status");
+  try {
+    const { invoke } = window.__TAURI__.core;
+    await invoke("locate_jk2");
+    dot.classList.remove("missing");
+  } catch (err) {
+    dot.classList.add("missing");
+    console.error("Game folder not found:", err);
   }
 }
 
 async function init() {
-  const modsListEl = document.getElementById("mods-list");
+  checkGameFolder();
+
+  const clientListEl = document.getElementById("client-list");
   try {
     const { fetch } = window.__TAURI__.http;
     const res = await fetch(MANIFEST_URL);
     mods = (await res.json()).mods;
   } catch (err) {
-    modsListEl.textContent = `Error loading manifest: ${err}`;
+    clientListEl.innerHTML = `<p class="sidebar-loading">Error: ${err}</p>`;
     console.error("Manifest fetch failed:", err);
     return;
   }
@@ -102,12 +142,25 @@ async function init() {
     }
   }
 
-  modsListEl.innerHTML = mods.map(renderCard).join("");
+  renderSidebar();
+  renderMain();
 }
 
-document.getElementById("mods-list").addEventListener("click", (e) => {
+document.getElementById("client-list").addEventListener("click", (e) => {
+  const row = e.target.closest(".client-row");
+  if (row) selectClient(row.dataset.name);
+});
+
+document.getElementById("main").addEventListener("click", (e) => {
   const btn = e.target.closest("button[data-action]");
-  if (btn) handleAction(btn.dataset.mod, btn.dataset.action);
+  if (btn) handleAction(selected, btn.dataset.action);
+});
+
+document.getElementById("change-folder-btn").addEventListener("click", () => {
+  document.getElementById("main").insertAdjacentHTML(
+    "afterbegin",
+    `<p class="detail-status" style="margin-bottom: 1rem;">Manual folder selection isn't built yet - the game folder is found automatically via Steam.</p>`
+  );
 });
 
 init();
