@@ -53,3 +53,19 @@ extractButton.addEventListener("click", async () => {
     console.error("Extraction failed:", err);
   }
 });
+
+const locateButton = document.getElementById("locate-jk2-btn");
+const locateOutput = document.getElementById("locate-output");
+
+locateButton.addEventListener("click", async () => {
+  locateOutput.textContent = "Locating...";
+  try {
+    const { invoke } = window.__TAURI__.core;
+    const result = await invoke("locate_jk2");
+    locateOutput.textContent = result;
+    console.log("Locate result:", result);
+  } catch (err) {
+    locateOutput.textContent = `Error locating JK2: ${err}`;
+    console.error("Locate failed:", err);
+  }
+});
