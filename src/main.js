@@ -15,3 +15,23 @@ button.addEventListener("click", async () => {
     console.error("Manifest fetch failed:", err);
   }
 });
+
+const NWH_URL = "https://jk2t.ddns.net/nwhfiles/nwh_linux_x64.tar.gz";
+const NWH_FILENAME = "nwh_linux_x64.tar.gz";
+const downloadButton = document.getElementById("download-nwh-btn");
+const downloadOutput = document.getElementById("download-output");
+
+downloadButton.addEventListener("click", async () => {
+  downloadOutput.textContent = "Downloading...";
+  try {
+    const { fetch } = window.__TAURI__.http;
+    const { writeFile, BaseDirectory } = window.__TAURI__.fs;
+    const res = await fetch(NWH_URL);
+    await writeFile(NWH_FILENAME, res.body, { baseDir: BaseDirectory.AppData });
+    downloadOutput.textContent = `Saved ${NWH_FILENAME} to the app data directory.`;
+    console.log("Download complete:", NWH_FILENAME);
+  } catch (err) {
+    downloadOutput.textContent = `Error downloading: ${err}`;
+    console.error("Download failed:", err);
+  }
+});
