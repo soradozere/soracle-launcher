@@ -34,6 +34,7 @@ function renderCard(mod) {
   }
   return `<div class="mod-card" id="mod-card-${mod.name}">
     <div class="mod-card-header"><span class="mod-name">${mod.name}</span><span class="mod-version">${mod.version}</span></div>
+    <p class="mod-description">${mod.description ?? ""}</p>
     <div class="mod-card-actions">${actions}</div>
     <div class="mod-card-status">${state.message ?? ""}</div>
   </div>`;
