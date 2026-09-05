@@ -29,6 +29,19 @@ fn extract_tommyternal(app: tauri::AppHandle) -> Result<String, String> {
     Ok(format!("Extracted to {}", dest.display()))
 }
 
+#[tauri::command]
+fn extract_openjo(app: tauri::AppHandle) -> Result<String, String> {
+    let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let archive_path = app_data.join("openjo_macos_arm64.tar.gz");
+    let dest = app_data.join("extracted").join("openjo");
+
+    let file = std::fs::File::open(&archive_path).map_err(|e| e.to_string())?;
+    let gz = flate2::read::GzDecoder::new(file);
+    tar::Archive::new(gz).unpack(&dest).map_err(|e| e.to_string())?;
+
+    Ok(format!("Extracted to {}", dest.display()))
+}
+
 const JK2_STEAM_APP_ID: u32 = 6030;
 
 fn find_jk2_install() -> Result<std::path::PathBuf, String> {
@@ -226,10 +239,7 @@ fn resolve_tommyternal_install(
 #[tauri::command]
 fn is_tommyternal_installed() -> Result<bool, String> {
     let (_, game_root) = find_jk2_base_and_root()?;
-    Ok(load_installed_mods(&game_root)
-        .get(TOMMYTERNAL_MOD_ID)
-        .map(|paths| !paths.is_empty())
-        .unwrap_or(false))
+    Ok(is_mod_installed(TOMMYTERNAL_MOD_ID, &game_root))
 }
 
 #[tauri::command]
@@ -246,31 +256,37 @@ fn play_tommyternal() -> Result<String, String> {
     Ok(format!("Launched {}", binary.display()))
 }
 
-#[tauri::command]
-fn preview_install_tommyternal(app: tauri::AppHandle) -> Result<String, String> {
-    let (payload_dir, base_dir, game_root) = resolve_tommyternal_install(&app)?;
-    let installed_mods = load_installed_mods(&game_root);
+fn preview_install(
+    mod_id: &str,
+    payload_dir: &std::path::Path,
+    base_dir: &std::path::Path,
+    game_root: &std::path::Path,
+) -> Result<String, String> {
+    let installed_mods = load_installed_mods(game_root);
     let already_ours: std::collections::HashSet<String> = installed_mods
-        .get(TOMMYTERNAL_MOD_ID)
+        .get(mod_id)
         .cloned()
         .unwrap_or_default()
         .into_iter()
         .collect();
-    let actions = plan_install(&payload_dir, &base_dir, &game_root, &already_ours)?;
+    let actions = plan_install(payload_dir, base_dir, game_root, &already_ours)?;
     Ok(actions.iter().map(describe_action).collect::<Vec<_>>().join("\n"))
 }
 
-#[tauri::command]
-fn install_tommyternal(app: tauri::AppHandle) -> Result<String, String> {
-    let (payload_dir, base_dir, game_root) = resolve_tommyternal_install(&app)?;
-    let mut installed_mods = load_installed_mods(&game_root);
+fn install_mod(
+    mod_id: &str,
+    payload_dir: &std::path::Path,
+    base_dir: &std::path::Path,
+    game_root: &std::path::Path,
+) -> Result<String, String> {
+    let mut installed_mods = load_installed_mods(game_root);
     let already_ours: std::collections::HashSet<String> = installed_mods
-        .get(TOMMYTERNAL_MOD_ID)
+        .get(mod_id)
         .cloned()
         .unwrap_or_default()
         .into_iter()
         .collect();
-    let actions = plan_install(&payload_dir, &base_dir, &game_root, &already_ours)?;
+    let actions = plan_install(payload_dir, base_dir, game_root, &already_ours)?;
 
     let mut installed_paths = Vec::new();
     for action in &actions {
@@ -285,21 +301,80 @@ fn install_tommyternal(app: tauri::AppHandle) -> Result<String, String> {
             }
         };
         installed_paths.push(
-            dest.strip_prefix(&game_root)
+            dest.strip_prefix(game_root)
                 .unwrap()
                 .to_string_lossy()
                 .to_string(),
         );
     }
 
-    installed_mods.insert(TOMMYTERNAL_MOD_ID.to_string(), installed_paths);
-    save_installed_mods(&game_root, &installed_mods)?;
+    installed_mods.insert(mod_id.to_string(), installed_paths);
+    save_installed_mods(game_root, &installed_mods)?;
 
     Ok(format!(
         "Installed {} items into {}",
         actions.len(),
         game_root.display()
     ))
+}
+
+fn is_mod_installed(mod_id: &str, game_root: &std::path::Path) -> bool {
+    load_installed_mods(game_root)
+        .get(mod_id)
+        .map(|paths| !paths.is_empty())
+        .unwrap_or(false)
+}
+
+#[tauri::command]
+fn preview_install_tommyternal(app: tauri::AppHandle) -> Result<String, String> {
+    let (payload_dir, base_dir, game_root) = resolve_tommyternal_install(&app)?;
+    preview_install(TOMMYTERNAL_MOD_ID, &payload_dir, &base_dir, &game_root)
+}
+
+#[tauri::command]
+fn install_tommyternal(app: tauri::AppHandle) -> Result<String, String> {
+    let (payload_dir, base_dir, game_root) = resolve_tommyternal_install(&app)?;
+    install_mod(TOMMYTERNAL_MOD_ID, &payload_dir, &base_dir, &game_root)
+}
+
+const OPENJO_MOD_ID: &str = "openjo";
+
+fn resolve_openjo_install(
+    app: &tauri::AppHandle,
+) -> Result<(std::path::PathBuf, std::path::PathBuf, std::path::PathBuf), String> {
+    let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let payload_dir = app_data.join("extracted").join("openjo");
+    let (base_dir, game_root) = find_jk2_base_and_root()?;
+    Ok((payload_dir, base_dir, game_root))
+}
+
+#[tauri::command]
+fn preview_install_openjo(app: tauri::AppHandle) -> Result<String, String> {
+    let (payload_dir, base_dir, game_root) = resolve_openjo_install(&app)?;
+    preview_install(OPENJO_MOD_ID, &payload_dir, &base_dir, &game_root)
+}
+
+#[tauri::command]
+fn install_openjo(app: tauri::AppHandle) -> Result<String, String> {
+    let (payload_dir, base_dir, game_root) = resolve_openjo_install(&app)?;
+    install_mod(OPENJO_MOD_ID, &payload_dir, &base_dir, &game_root)
+}
+
+#[tauri::command]
+fn is_openjo_installed() -> Result<bool, String> {
+    let (_, game_root) = find_jk2_base_and_root()?;
+    Ok(is_mod_installed(OPENJO_MOD_ID, &game_root))
+}
+
+#[tauri::command]
+fn play_openjo() -> Result<String, String> {
+    let (_, game_root) = find_jk2_base_and_root()?;
+    let app_bundle = game_root.join("openjo_sp.arm64.app");
+    std::process::Command::new("open")
+        .arg(&app_bundle)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(format!("Launched {}", app_bundle.display()))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -311,12 +386,17 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             extract_nwh,
             extract_tommyternal,
+            extract_openjo,
             locate_jk2,
             locate_jk2_base,
             preview_install_tommyternal,
             install_tommyternal,
             is_tommyternal_installed,
-            play_tommyternal
+            play_tommyternal,
+            preview_install_openjo,
+            install_openjo,
+            is_openjo_installed,
+            play_openjo
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -11,7 +11,8 @@
       "allow": [
         { "url": "https://gist.githubusercontent.com/soradozere/a5ac8df67ac85687d20b4901ae1f1af0/raw/manifest.json" },
         { "url": "https://jk2t.ddns.net/nwhfiles/nwh_linux_x64.tar.gz" },
-        { "url": "https://github.com/TomArrow/jk2mv/releases/download/latest-postxp/macOS.Package.Portable.Release.arm64.zip" }
+        { "url": "https://github.com/TomArrow/jk2mv/releases/download/latest-postxp/macOS.Package.Portable.Release.arm64.zip" },
+        { "url": "https://github.com/JACoders/OpenJK/releases/download/latest/OpenJO-macos-arm64.tar.gz" }
       ]
     },
     "fs:allow-appdata-write-recursive"

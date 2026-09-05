@@ -8,6 +8,13 @@ const MOD_HANDLERS = {
     checkInstalledCommand: "is_tommyternal_installed",
     playCommand: "play_tommyternal",
   },
+  OpenJO: {
+    filename: "openjo_macos_arm64.tar.gz",
+    extractCommand: "extract_openjo",
+    installCommand: "install_openjo",
+    checkInstalledCommand: "is_openjo_installed",
+    playCommand: "play_openjo",
+  },
 };
 
 let mods = [];
