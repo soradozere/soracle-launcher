@@ -100,26 +100,65 @@ enum InstallAction {
 }
 
 fn describe_action(action: &InstallAction) -> String {
-    match action {
-        InstallAction::MergeBaseFile { src, dest } => {
-            format!("{} -> {} (merge into base)", src.display(), dest.display())
-        }
-        InstallAction::CopyModDir { src, dest } => {
-            format!("{} -> {} (mod folder)", src.display(), dest.display())
-        }
-        InstallAction::CopyRootFile { src, dest } => {
-            format!("{} -> {} (game root)", src.display(), dest.display())
+    let (src, dest, kind) = match action {
+        InstallAction::MergeBaseFile { src, dest } => (src, dest, "merge into base"),
+        InstallAction::CopyModDir { src, dest } => (src, dest, "mod folder"),
+        InstallAction::CopyRootFile { src, dest } => (src, dest, "game root"),
+    };
+    let status = if dest.exists() { "update" } else { "new" };
+    format!("{} -> {} ({kind}, {status})", src.display(), dest.display())
+}
+
+const TOMMYTERNAL_MOD_ID: &str = "tommyternal";
+
+fn installed_manifest_path(game_root: &std::path::Path) -> std::path::PathBuf {
+    game_root.join(".soracle_installed_mods.json")
+}
+
+fn load_installed_mods(
+    game_root: &std::path::Path,
+) -> std::collections::HashMap<String, Vec<String>> {
+    std::fs::read_to_string(installed_manifest_path(game_root))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn save_installed_mods(
+    game_root: &std::path::Path,
+    mods: &std::collections::HashMap<String, Vec<String>>,
+) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(mods).map_err(|e| e.to_string())?;
+    std::fs::write(installed_manifest_path(game_root), json).map_err(|e| e.to_string())
+}
+
+fn check_ownership(
+    dest: &std::path::Path,
+    game_root: &std::path::Path,
+    already_ours: &std::collections::HashSet<String>,
+) -> Result<(), String> {
+    if dest.exists() {
+        let rel = dest
+            .strip_prefix(game_root)
+            .map_err(|e| e.to_string())?
+            .to_string_lossy()
+            .to_string();
+        if !already_ours.contains(&rel) {
+            return Err(format!(
+                "{} already exists and wasn't installed by this launcher - refusing to overwrite",
+                dest.display()
+            ));
         }
     }
+    Ok(())
 }
 
 fn plan_install(
     payload_dir: &std::path::Path,
     real_base: &std::path::Path,
+    game_root: &std::path::Path,
+    already_ours: &std::collections::HashSet<String>,
 ) -> Result<Vec<InstallAction>, String> {
-    let game_root = real_base
-        .parent()
-        .ok_or_else(|| "base folder has no parent directory".to_string())?;
     let mut actions = Vec::new();
 
     for entry in std::fs::read_dir(payload_dir).map_err(|e| e.to_string())? {
@@ -131,12 +170,7 @@ fn plan_install(
             for inner in std::fs::read_dir(&path).map_err(|e| e.to_string())? {
                 let inner_path = inner.map_err(|e| e.to_string())?.path();
                 let dest = real_base.join(inner_path.file_name().unwrap());
-                if dest.exists() {
-                    return Err(format!(
-                        "{} already exists - refusing to overwrite",
-                        dest.display()
-                    ));
-                }
+                check_ownership(&dest, game_root, already_ours)?;
                 actions.push(InstallAction::MergeBaseFile {
                     src: inner_path,
                     dest,
@@ -144,12 +178,7 @@ fn plan_install(
             }
         } else {
             let dest = game_root.join(&name);
-            if dest.exists() {
-                return Err(format!(
-                    "{} already exists - refusing to overwrite",
-                    dest.display()
-                ));
-            }
+            check_ownership(&dest, game_root, already_ours)?;
             if path.is_dir() {
                 actions.push(InstallAction::CopyModDir { src: path, dest });
             } else {
@@ -177,39 +206,71 @@ fn copy_dir_recursive(src: &std::path::Path, dest: &std::path::Path) -> Result<(
 
 fn resolve_tommyternal_install(
     app: &tauri::AppHandle,
-) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
+) -> Result<(std::path::PathBuf, std::path::PathBuf, std::path::PathBuf), String> {
     let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let payload_dir = find_single_subdir(&app_data.join("extracted").join("tommyternal"))?;
     let install_root = find_jk2_install()?;
     let base_dir = find_base_dir(&install_root)?;
-    Ok((payload_dir, base_dir))
+    let game_root = base_dir
+        .parent()
+        .ok_or_else(|| "base folder has no parent directory".to_string())?
+        .to_path_buf();
+    Ok((payload_dir, base_dir, game_root))
 }
 
 #[tauri::command]
 fn preview_install_tommyternal(app: tauri::AppHandle) -> Result<String, String> {
-    let (payload_dir, base_dir) = resolve_tommyternal_install(&app)?;
-    let actions = plan_install(&payload_dir, &base_dir)?;
+    let (payload_dir, base_dir, game_root) = resolve_tommyternal_install(&app)?;
+    let installed_mods = load_installed_mods(&game_root);
+    let already_ours: std::collections::HashSet<String> = installed_mods
+        .get(TOMMYTERNAL_MOD_ID)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    let actions = plan_install(&payload_dir, &base_dir, &game_root, &already_ours)?;
     Ok(actions.iter().map(describe_action).collect::<Vec<_>>().join("\n"))
 }
 
 #[tauri::command]
 fn install_tommyternal(app: tauri::AppHandle) -> Result<String, String> {
-    let (payload_dir, base_dir) = resolve_tommyternal_install(&app)?;
-    let actions = plan_install(&payload_dir, &base_dir)?;
+    let (payload_dir, base_dir, game_root) = resolve_tommyternal_install(&app)?;
+    let mut installed_mods = load_installed_mods(&game_root);
+    let already_ours: std::collections::HashSet<String> = installed_mods
+        .get(TOMMYTERNAL_MOD_ID)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    let actions = plan_install(&payload_dir, &base_dir, &game_root, &already_ours)?;
 
+    let mut installed_paths = Vec::new();
     for action in &actions {
-        match action {
+        let dest = match action {
             InstallAction::MergeBaseFile { src, dest } | InstallAction::CopyRootFile { src, dest } => {
                 std::fs::copy(src, dest).map_err(|e| e.to_string())?;
+                dest
             }
-            InstallAction::CopyModDir { src, dest } => copy_dir_recursive(src, dest)?,
-        }
+            InstallAction::CopyModDir { src, dest } => {
+                copy_dir_recursive(src, dest)?;
+                dest
+            }
+        };
+        installed_paths.push(
+            dest.strip_prefix(&game_root)
+                .unwrap()
+                .to_string_lossy()
+                .to_string(),
+        );
     }
+
+    installed_mods.insert(TOMMYTERNAL_MOD_ID.to_string(), installed_paths);
+    save_installed_mods(&game_root, &installed_mods)?;
 
     Ok(format!(
         "Installed {} items into {}",
         actions.len(),
-        base_dir.parent().unwrap().display()
+        game_root.display()
     ))
 }
 
