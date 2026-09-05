@@ -69,3 +69,19 @@ locateButton.addEventListener("click", async () => {
     console.error("Locate failed:", err);
   }
 });
+
+const locateBaseButton = document.getElementById("locate-jk2-base-btn");
+const locateBaseOutput = document.getElementById("locate-base-output");
+
+locateBaseButton.addEventListener("click", async () => {
+  locateBaseOutput.textContent = "Locating...";
+  try {
+    const { invoke } = window.__TAURI__.core;
+    const result = await invoke("locate_jk2_base");
+    locateBaseOutput.textContent = result;
+    console.log("Locate base result:", result);
+  } catch (err) {
+    locateBaseOutput.textContent = `Error locating base folder: ${err}`;
+    console.error("Locate base failed:", err);
+  }
+});
