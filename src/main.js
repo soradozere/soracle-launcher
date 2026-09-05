@@ -37,3 +37,19 @@ downloadButton.addEventListener("click", async () => {
     console.error("Download failed:", err);
   }
 });
+
+const extractButton = document.getElementById("extract-nwh-btn");
+const extractOutput = document.getElementById("extract-output");
+
+extractButton.addEventListener("click", async () => {
+  extractOutput.textContent = "Extracting...";
+  try {
+    const { invoke } = window.__TAURI__.core;
+    const result = await invoke("extract_nwh");
+    extractOutput.textContent = result;
+    console.log("Extraction complete:", result);
+  } catch (err) {
+    extractOutput.textContent = `Error extracting: ${err}`;
+    console.error("Extraction failed:", err);
+  }
+});
