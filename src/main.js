@@ -414,11 +414,16 @@ function favoriteServerBlockHtml() {
 
 function renderHomeView(mainEl) {
   const welcome = session
-    ? `<div class="home-welcome">
-         <h2>Welcome back, ${session.name}</h2>
-       </div>`
-    : `<div class="home-welcome">
-         <h2>Welcome to JK2 Launcher</h2>
+    ? `<div class="home-welcome"><h2>Welcome back, ${session.name}</h2></div>`
+    : `<div class="home-welcome"><h2>Welcome to JK2 Launcher</h2></div>`;
+
+  // Kept out of the initial welcome block and rendered further down (after
+  // the strap and favorite-server bar) so a first-time visitor's first
+  // impression isn't a login form - the strap line is what should read
+  // first.
+  const loginPromptHtml = session
+    ? ""
+    : `<div class="home-login-prompt">
          <p>Sign in with your JK2CTF player account to see your stats here and on Capture the Flag - NWH.</p>
          <form id="soracle-login-form" class="login-form">
            <input name="name" placeholder="Player name" autocomplete="username" required>
@@ -444,13 +449,13 @@ function renderHomeView(mainEl) {
     ${welcome}
     <p class="home-strap">Download, update and launch a client from the sidebar, and see what the playerbase has been up to below.</p>
     ${favoriteServerBlockHtml()}
+    ${loginPromptHtml}
     ${renderRecentHighlightsBlock()}
     <p class="home-feed-label">Recent Activity</p>
     ${feedHtml}
   `;
 }
 
-// Strips idTech3 caret color codes (^1, ^4, etc.) for plain-text display.
 // Strips idTech3 caret color codes (^1, ^7, etc.) and raw control bytes some
 // servers throw into their hostname/player names (seen in the wild as
 // literal \x01 bytes, presumably an old anti-spoof or client-specific trick)

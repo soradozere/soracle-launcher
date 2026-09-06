@@ -548,7 +548,11 @@ button.change-folder:hover {
   flex-shrink: 0;
 }
 
-.home-welcome p {
+.home-login-prompt {
+  margin-bottom: 1.5rem;
+}
+
+.home-login-prompt p {
   font-size: 0.88rem;
   color: var(--text-dim);
   margin: 0 0 1rem;
