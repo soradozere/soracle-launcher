@@ -8,6 +8,10 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 
 const RING_BAND_CENTER_Y = -3.25;
 const VERTICAL_NUDGE = 0.25;
+// Extra downward shift so the emblem's top doesn't run past the canvas edge
+// in this narrow vertical strip (the ported constants above were calibrated
+// for a wider banner layout on the site).
+const MASTHEAD_DROP = 1.35;
 
 const BEAM_Z = -1.5;
 const BEAM_HEIGHT = 30;
@@ -18,6 +22,7 @@ const HALO_OPACITY = 0.22;
 const GLOW_OPACITY = 0.6;
 
 const EMBLEM_GAIN = 1.45;
+const EMBLEM_SCALE = 0.88;
 const FOV = 32;
 
 const ASSET_BASE = "/assets/masthead";
@@ -38,15 +43,18 @@ async function init() {
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(FOV, 1, 0.1, 100);
 
+  // Measure the canvas itself, not the (narrower) masthead div - the canvas
+  // is deliberately sized wider via CSS so the emblem can bleed out past the
+  // masthead strip instead of being cropped at its border.
   function resize() {
-    const w = container.clientWidth || 1;
-    const h = container.clientHeight || 1;
+    const w = canvas.clientWidth || 1;
+    const h = canvas.clientHeight || 1;
     renderer.setSize(w, h, false);
     camera.aspect = w / h;
     camera.position.z = w / 5.39 / (2 * Math.tan(THREE.MathUtils.degToRad(FOV / 2)));
     camera.updateProjectionMatrix();
   }
-  new ResizeObserver(resize).observe(container);
+  new ResizeObserver(resize).observe(canvas);
   resize();
 
   const textureLoader = new THREE.TextureLoader();
@@ -145,7 +153,8 @@ async function init() {
   }
 
   const group = new THREE.Group();
-  group.position.set(0, -RING_BAND_CENTER_Y - VERTICAL_NUDGE, 0);
+  group.position.set(0, -RING_BAND_CENTER_Y - VERTICAL_NUDGE - MASTHEAD_DROP, 0);
+  group.scale.setScalar(EMBLEM_SCALE);
   group.add(gltf.scene);
   scene.add(group);
 

@@ -447,13 +447,17 @@ button.change-folder:hover {
   width: 88px;
   flex-shrink: 0;
   border-left: 1px solid var(--border);
-  overflow: hidden;
+  overflow: visible;
   position: relative;
+  pointer-events: none;
 }
 
 .masthead canvas {
   display: block;
-  width: 100%;
+  position: absolute;
+  top: 0;
+  left: -46px;
+  width: calc(100% + 46px);
   height: 100%;
 }
 
