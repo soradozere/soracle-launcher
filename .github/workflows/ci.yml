@@ -15,6 +15,7 @@ jobs:
         include:
           - platform: macos-latest
           - platform: ubuntu-22.04
+          - platform: windows-latest
 
     runs-on: ${{ matrix.platform }}
     steps:

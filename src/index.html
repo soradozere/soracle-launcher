@@ -4,14 +4,25 @@
     <meta charset="UTF-8" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Chakra+Petch:wght@500;600;700&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="styles.css" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>JK2 Launcher</title>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.160.1/build/three.module.js",
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.1/examples/jsm/"
+        }
+      }
+    </script>
     <script type="module" src="/main.js" defer></script>
+    <script type="module" src="/masthead-logo.js" defer></script>
+    <script type="module" src="/starfield.js" defer></script>
   </head>
 
   <body>
+    <canvas id="starfield-canvas"></canvas>
     <div class="window">
       <div class="titlebar">
         <h1>JK2 Launcher</h1>
@@ -20,12 +31,21 @@
 
       <div class="body">
         <div class="sidebar">
+          <div class="sidebar-section sidebar-section-tight">
+            <div class="home-nav-row" id="home-nav-row" data-name="__home__">
+              <span class="home-nav-label">Home</span>
+            </div>
+          </div>
+
+          <div class="sidebar-divider"></div>
+
           <div class="sidebar-section">
             <p class="sidebar-label">Game Folder</p>
             <div class="game-folder-row">
               <span class="status-dot" id="game-folder-status"></span>
-              <button id="change-folder-btn" class="change-folder">Change...</button>
+              <span class="game-folder-desc" id="game-folder-desc"></span>
             </div>
+            <button id="change-folder-btn" class="change-folder">Change...</button>
           </div>
 
           <div class="sidebar-divider"></div>
@@ -34,11 +54,37 @@
             <p class="sidebar-label">Clients</p>
           </div>
           <div class="client-list" id="client-list"><p class="sidebar-loading">Loading...</p></div>
+
+          <div class="sidebar-divider"></div>
+
+          <div class="sidebar-section sidebar-section-tight">
+            <div class="home-nav-row" id="mods-nav-row" data-name="__mods__">
+              <span class="home-nav-label">Mods</span>
+            </div>
+          </div>
+
+          <div class="sidebar-divider"></div>
+
+          <div class="sidebar-section sidebar-section-tight">
+            <div class="home-nav-row" id="faq-nav-row" data-name="__faq__">
+              <span class="home-nav-label">Support / FAQ</span>
+            </div>
+          </div>
+
+          <div class="sidebar-section sidebar-section-tight" id="sign-out-section" hidden>
+            <div class="home-nav-row" id="sign-out-nav-row">
+              <span class="home-nav-label">Sign out</span>
+            </div>
+          </div>
         </div>
 
         <main class="main" id="main">
           <div class="main-empty">Select a client</div>
         </main>
+
+        <div class="masthead" id="masthead">
+          <canvas id="masthead-canvas"></canvas>
+        </div>
       </div>
     </div>
   </body>
