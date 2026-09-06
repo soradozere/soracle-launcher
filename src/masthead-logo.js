@@ -11,7 +11,7 @@ const VERTICAL_NUDGE = 0.25;
 // Extra downward shift so the emblem's top doesn't run past the canvas edge
 // in this narrow vertical strip (the ported constants above were calibrated
 // for a wider banner layout on the site).
-const MASTHEAD_DROP = 1.35;
+const MASTHEAD_DROP = 1.7;
 
 const BEAM_Z = -1.5;
 const BEAM_HEIGHT = 30;

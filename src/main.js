@@ -743,24 +743,25 @@ function renderMain() {
       actions += `<a class="profile-link" href="${SORACLE_BASE}" target="_blank" rel="noopener">JK2 CTF</a>`;
     }
   }
-  const links = [
-    mod.sourceUrl ? { label: "Source", url: mod.sourceUrl } : null,
-    mod.communityUrl ? { label: new URL(mod.communityUrl).hostname, url: mod.communityUrl } : null,
-  ]
-    .filter(Boolean)
-    .map((l) => `<a class="detail-source-link" href="${l.url}" target="_blank" rel="noopener">${l.label} ↗</a>`)
-    .join("");
   const banner = `<img class="detail-banner" src="assets/banners/${mod.name.toLowerCase()}.jpg" alt="" onerror="this.remove()">`;
   const repo = githubRepoFromUrl(mod.sourceUrl);
   const releaseHtml = repo ? renderReleaseNotesBlock(mod, repo) : "";
+  // "View on GitHub ↗" (in releaseHtml) already covers the source link for
+  // any client hosted on GitHub. Only show a fallback Source link when it
+  // isn't (e.g. NWH's sourceUrl is Flate's own server, not a repo) - and
+  // bottom-left, not up top competing with the masthead emblem for space.
+  const sourceHtml = !repo && mod.sourceUrl
+    ? `<p class="detail-source-standalone"><a class="detail-source-link" href="${mod.sourceUrl}" target="_blank" rel="noopener">Source ↗</a></p>`
+    : "";
   mainEl.innerHTML = `
     ${banner}
     <div class="detail-header"><h2>${mod.displayName ?? mod.name}</h2><span class="detail-version">${mod.version}</span></div>
     <p class="detail-description">${mod.description ?? ""}</p>
-    <div class="detail-actions">${actions}<div class="detail-links">${links}</div></div>
+    <div class="detail-actions">${actions}</div>
     <p class="detail-status">${state.message ?? ""}</p>
     ${statsHtml}
     ${releaseHtml}
+    ${sourceHtml}
   `;
 }
 

@@ -386,18 +386,15 @@ button.change-folder:hover {
   color: var(--bg);
 }
 
-.detail-links {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: 0.9rem;
-}
-
 .detail-source-link {
   font-size: 0.82rem;
   font-weight: 500;
   color: var(--primary);
   text-decoration: none;
+}
+
+.detail-source-standalone {
+  margin-top: 0.75rem;
 }
 
 .detail-source-link:hover {
