@@ -141,6 +141,36 @@ async function clearSession() {
   }
 }
 
+// A themed stand-in for window.confirm() - a plain native browser dialog
+// would look completely out of place against the rest of this UI. Resolves
+// true/false; clicking the backdrop counts as Cancel.
+function showConfirmDialog({ title, message, confirmLabel = "Confirm", danger = false }) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "confirm-overlay";
+    overlay.innerHTML = `
+      <div class="confirm-dialog">
+        <h3 class="confirm-title">${title}</h3>
+        <p class="confirm-message">${message}</p>
+        <div class="confirm-actions">
+          <button class="confirm-cancel-btn">Cancel</button>
+          <button class="confirm-ok-btn ${danger ? "danger" : ""}">${confirmLabel}</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+
+    function finish(result) {
+      overlay.remove();
+      resolve(result);
+    }
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay) finish(false);
+    });
+    overlay.querySelector(".confirm-cancel-btn").addEventListener("click", () => finish(false));
+    overlay.querySelector(".confirm-ok-btn").addEventListener("click", () => finish(true));
+  });
+}
+
 async function sha256Hex(bytes) {
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   return Array.from(new Uint8Array(digest))
@@ -995,11 +1025,14 @@ async function handleAction(name, action) {
   const handler = MOD_HANDLERS[name];
   const mod = mods.find((m) => m.name === name);
   const { invoke } = window.__TAURI__.core;
-  if (
-    action === "uninstall" &&
-    !confirm(`Uninstall ${mod.displayName ?? mod.name}? This removes it from your game folder - your PK3 mods and player data aren't touched.`)
-  ) {
-    return;
+  if (action === "uninstall") {
+    const confirmed = await showConfirmDialog({
+      title: "Uninstall?",
+      message: `Remove ${mod.displayName ?? mod.name} from your game folder? Your PK3 mods and player data aren't touched.`,
+      confirmLabel: "Uninstall",
+      danger: true,
+    });
+    if (!confirmed) return;
   }
   modState[name] = { ...modState[name], busy: true, message: "Working..." };
   renderSidebar();

@@ -13,13 +13,18 @@ use tauri_plugin_dialog::DialogExt;
 // run an unnotarized bundle locally - it isn't a substitute for the
 // developer's own signature, just a fix for a broken/missing one.
 fn resign_app_bundle(app_bundle: &std::path::Path) -> Result<(), String> {
-    let status = std::process::Command::new("codesign")
+    let output = std::process::Command::new("codesign")
         .args(["--force", "--deep", "--sign", "-"])
         .arg(app_bundle)
-        .status()
+        .output()
         .map_err(|e| e.to_string())?;
-    if !status.success() {
-        return Err(format!("codesign failed for {}", app_bundle.display()));
+    if !output.status.success() {
+        // codesign's own diagnostic (on stderr) is the whole point of
+        // capturing output instead of just the exit status - "codesign
+        // failed" alone gives no way to tell a bad bundle from anything
+        // else without a debugger attached to the user's machine.
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("codesign failed for {}: {}", app_bundle.display(), stderr.trim()));
     }
     Ok(())
 }
@@ -420,7 +425,44 @@ fn copy_dir_recursive(src: &std::path::Path, dest: &std::path::Path) -> Result<(
         let entry = entry.map_err(|e| e.to_string())?;
         let path = entry.path();
         let dest_path = dest.join(entry.file_name());
-        if path.is_dir() {
+        let file_type = entry.file_type().map_err(|e| e.to_string())?;
+
+        if file_type.is_symlink() {
+            // Recreate the symlink itself rather than dereferencing it.
+            // macOS .framework bundles (JK2MV's bundled SDL2.framework, for
+            // one) rely on their internal Versions/Current -> Versions/A
+            // style symlinks to read as a valid framework at all - copying
+            // their *targets' contents* instead leaves three ambiguous
+            // copies of the same files, and codesign refuses to sign it
+            // ("bundle format is ambiguous (could be app or framework)").
+            let target = std::fs::read_link(&path).map_err(|e| e.to_string())?;
+            // A previous install from before this fix could have left a
+            // *real* directory sitting where a symlink now needs to go
+            // (this exact bundle used to get flattened) - remove_file alone
+            // can't clear that, so check which kind of thing is actually
+            // there rather than assuming.
+            if dest_path.is_symlink() {
+                let _ = std::fs::remove_file(&dest_path);
+            } else if dest_path.is_dir() {
+                let _ = std::fs::remove_dir_all(&dest_path);
+            } else {
+                let _ = std::fs::remove_file(&dest_path);
+            }
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&target, &dest_path).map_err(|e| e.to_string())?;
+            #[cfg(not(unix))]
+            {
+                // This helper is only ever used for macOS .app/.framework
+                // extraction today, so there's nothing that exercises this
+                // branch yet - falling back to copying the target's actual
+                // content rather than leaving it broken if that changes.
+                if target.is_dir() {
+                    copy_dir_recursive(&target, &dest_path)?;
+                } else {
+                    std::fs::copy(&target, &dest_path).map_err(|e| e.to_string())?;
+                }
+            }
+        } else if file_type.is_dir() {
             copy_dir_recursive(&path, &dest_path)?;
         } else {
             // A source file with read-only permissions (e.g. anything that
