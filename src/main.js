@@ -839,6 +839,55 @@ async function refreshModStates() {
   renderMain();
 }
 
+let pendingUpdate = null;
+let updateBusy = false;
+
+function setUpdateLabel(text) {
+  const el = document.getElementById("update-nav-label");
+  if (el) el.textContent = text;
+}
+
+async function checkForUpdates(silent) {
+  if (updateBusy) return;
+  updateBusy = true;
+  if (!silent) setUpdateLabel("Checking...");
+  try {
+    const { check } = window.__TAURI__.updater;
+    const update = await check();
+    if (update) {
+      pendingUpdate = update;
+      setUpdateLabel(`Update available: v${update.version} — click to install`);
+    } else {
+      pendingUpdate = null;
+      setUpdateLabel(silent ? "Check for Updates" : "Up to date");
+      if (!silent) setTimeout(() => { if (!pendingUpdate) setUpdateLabel("Check for Updates"); }, 3000);
+    }
+  } catch (err) {
+    console.error("Update check failed:", err);
+    pendingUpdate = null;
+    setUpdateLabel(silent ? "Check for Updates" : "Error checking for updates");
+    if (!silent) setTimeout(() => { if (!pendingUpdate) setUpdateLabel("Check for Updates"); }, 3000);
+  } finally {
+    updateBusy = false;
+  }
+}
+
+async function installPendingUpdate() {
+  if (!pendingUpdate || updateBusy) return;
+  updateBusy = true;
+  try {
+    setUpdateLabel("Downloading update...");
+    await pendingUpdate.downloadAndInstall();
+    setUpdateLabel("Restarting...");
+    const { relaunch } = window.__TAURI__.process;
+    await relaunch();
+  } catch (err) {
+    console.error("Update install failed:", err);
+    setUpdateLabel("Error installing update");
+    updateBusy = false;
+  }
+}
+
 async function init() {
   checkGameFolder();
   session = await loadSession();
@@ -857,6 +906,7 @@ async function init() {
   }
 
   await refreshModStates();
+  checkForUpdates(true);
 }
 
 document.getElementById("home-nav-row").addEventListener("click", () => selectClient("__home__"));
@@ -867,6 +917,10 @@ document.getElementById("sign-out-nav-row").addEventListener("click", () => {
   clearSession();
   renderSidebar();
   renderMain();
+});
+document.getElementById("update-nav-row").addEventListener("click", () => {
+  if (pendingUpdate) installPendingUpdate();
+  else checkForUpdates(false);
 });
 
 document.getElementById("client-list").addEventListener("click", (e) => {
