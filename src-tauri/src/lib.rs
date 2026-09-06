@@ -926,6 +926,7 @@ struct ServerPlayer {
 
 #[derive(serde::Serialize)]
 struct ServerStatus {
+    address: String,
     hostname: String,
     map: String,
     max_clients: i32,
@@ -1001,7 +1002,89 @@ fn query_server_status(address: String) -> Result<ServerStatus, String> {
         max_clients: info.get("sv_maxclients").and_then(|s| s.parse().ok()).unwrap_or(0),
         players,
         ping_ms,
+        address,
     })
+}
+
+// JK2's community master server - the same one NWH and Tommyternal both
+// have baked in (confirmed via `strings` on the real binaries: both
+// reference "master.jk2mv.org" alongside the long-dead original
+// "masterjk2.ravensoft.com"). Protocol 15 is JK2 1.02's protocol version,
+// confirmed against a real server's own getstatus response.
+const JK2_MASTER_HOST: &str = "master.jk2mv.org";
+const JK2_MASTER_PORT: u16 = 28060;
+const JK2_PROTOCOL: u16 = 15;
+
+fn query_master_servers() -> Result<Vec<String>, String> {
+    use std::net::UdpSocket;
+    use std::time::Duration;
+
+    let socket = UdpSocket::bind("0.0.0.0:0").map_err(|e| e.to_string())?;
+    socket
+        .set_read_timeout(Some(Duration::from_millis(1500)))
+        .map_err(|e| e.to_string())?;
+
+    let mut packet: Vec<u8> = vec![0xFF, 0xFF, 0xFF, 0xFF];
+    packet.extend_from_slice(format!("getservers {} empty full", JK2_PROTOCOL).as_bytes());
+
+    let master_addr = format!("{}:{}", JK2_MASTER_HOST, JK2_MASTER_PORT);
+    socket
+        .send_to(&packet, &master_addr)
+        .map_err(|e| format!("Couldn't reach master server: {}", e))?;
+
+    let mut addresses = Vec::new();
+    let mut buf = [0u8; 16384];
+    // A big list can span more than one reply packet - keep reading until
+    // the master goes quiet (recv times out).
+    loop {
+        let (len, _) = match socket.recv_from(&mut buf) {
+            Ok(r) => r,
+            Err(_) => break,
+        };
+        let data = &buf[..len];
+        let marker = b"getserversResponse";
+        let Some(pos) = data.windows(marker.len()).position(|w| w == marker) else {
+            continue;
+        };
+        let body = &data[pos + marker.len()..];
+        let mut i = 0;
+        while i < body.len() {
+            if body[i] != b'\\' {
+                i += 1;
+                continue;
+            }
+            let rest = &body[i + 1..];
+            if rest.starts_with(b"EOT") {
+                break;
+            }
+            if rest.len() < 6 {
+                break;
+            }
+            let chunk = &rest[..6];
+            let port = ((chunk[4] as u16) << 8) | chunk[5] as u16;
+            addresses.push(format!("{}.{}.{}.{}:{}", chunk[0], chunk[1], chunk[2], chunk[3], port));
+            i += 7;
+        }
+    }
+    Ok(addresses)
+}
+
+#[tauri::command]
+fn list_servers() -> Result<Vec<ServerStatus>, String> {
+    let addresses = query_master_servers()?;
+    let handles: Vec<_> = addresses
+        .into_iter()
+        .map(|address| std::thread::spawn(move || query_server_status(address)))
+        .collect();
+
+    let mut servers: Vec<ServerStatus> = handles
+        .into_iter()
+        .filter_map(|h| h.join().ok())
+        .filter_map(|r| r.ok())
+        .collect();
+    // Busiest servers first - the ones people actually want to see.
+    servers.sort_by(|a, b| b.players.len().cmp(&a.players.len()));
+    Ok(servers)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1040,7 +1123,8 @@ pub fn run() {
             add_pk3_mod_from_download,
             set_pk3_mod_targets,
             remove_pk3_mod,
-            query_server_status
+            query_server_status,
+            list_servers
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

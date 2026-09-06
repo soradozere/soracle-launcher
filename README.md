@@ -55,7 +55,18 @@ it's uploaded - it has to also get past this pinned value, which only
 changes when someone here deliberately updates it.
 
 So when Tommyternal, OpenJO, or JK2MV cut a new release and users start
-seeing that warning, update the pin:
+seeing that warning, update the pin. Easiest way:
+
+```sh
+./scripts/verify-client-release.sh TommyternalJK2MV   # or OpenJO / JK2MV
+```
+
+It downloads the current release, shows you its fingerprint next to what's
+pinned, and - only after you say yes - updates the manifest. Nothing to
+install, nothing to remember.
+
+The manual version of the same steps, if you want to see what it's actually
+doing:
 
 ```sh
 # Pull the exact URL from the manifest for the client that changed, e.g.:

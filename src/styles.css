@@ -486,6 +486,46 @@ button.change-folder:hover {
   margin: 0 0 1.5rem;
 }
 
+.favorite-server-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.7rem 1rem;
+  margin: 0 0 1.5rem;
+  background: var(--surface-elevated);
+  border: 1px solid var(--primary-dim);
+  border-radius: 8px;
+}
+
+.favorite-server-star {
+  color: var(--rarity-legendary);
+  font-size: 1rem;
+  flex-shrink: 0;
+}
+
+.favorite-server-name {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 0.92rem;
+  color: var(--text-bright);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.favorite-server-bar .server-meta {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.favorite-server-bar .server-join-btn {
+  flex-shrink: 0;
+}
+
 .home-welcome p {
   font-size: 0.88rem;
   color: var(--text-dim);
@@ -1088,11 +1128,56 @@ button.change-folder:hover {
   gap: 0.6rem;
 }
 
+.server-card-title {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
 .server-card-header h3 {
   margin: 0;
   font-family: var(--font-display);
   font-size: 1rem;
   color: var(--text-bright);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.server-favorite-btn {
+  flex-shrink: 0;
+  font-size: 1rem;
+  line-height: 1;
+  color: var(--text-dim);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+}
+
+.server-favorite-btn:hover {
+  color: var(--rarity-legendary);
+}
+
+.server-favorite-btn.active {
+  color: var(--rarity-legendary);
+}
+
+.server-refresh-btn {
+  font-family: inherit;
+  font-size: 0.82rem;
+  color: var(--primary);
+  background: none;
+  border: 1px solid var(--primary-dim);
+  border-radius: 6px;
+  padding: 0.3rem 0.7rem;
+  cursor: pointer;
+}
+
+.server-refresh-btn:hover {
+  background: var(--primary-dim);
+  color: var(--bg);
 }
 
 .server-ping {

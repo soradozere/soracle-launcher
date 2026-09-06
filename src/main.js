@@ -27,11 +27,10 @@ const MOD_HANDLERS = {
   },
 };
 
-// Known community servers, queried live via the idTech3 getstatus protocol
-// (see query_server_status in the Rust backend). Only clients that actually
-// speak the multiplayer protocol can join - OpenJO is single-player only.
-const SERVERS = ["192.223.24.74:28070"];
+// Only clients that actually speak the multiplayer protocol can join -
+// OpenJO is single-player only.
 const JOINABLE_CLIENTS = ["TommyternalJK2MV", "JK2MV"];
+const FAVORITE_SERVER_KEY = "jk2launcher.favoriteServer";
 
 let mods = [];
 let modState = {};
@@ -45,8 +44,26 @@ const statsCache = {}; // player name -> stats data, null (not found), or { erro
 let pk3Mods = null; // list from list_pk3_mods, or null while loading
 let pk3ModsError = null;
 
-const serverStatusCache = {}; // address -> ServerStatus, undefined while loading, or { error }
+let serverList = undefined; // undefined = not loaded, array once loaded, or { error }
+const serverStatusCache = {}; // address -> ServerStatus, undefined while loading, or { error } (used for the Home favorite card)
 const serverJoinMessage = {}; // address -> status text shown under that server's card
+
+function getFavoriteServer() {
+  try {
+    return localStorage.getItem(FAVORITE_SERVER_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function setFavoriteServer(address) {
+  try {
+    if (address) localStorage.setItem(FAVORITE_SERVER_KEY, address);
+    else localStorage.removeItem(FAVORITE_SERVER_KEY);
+  } catch {
+    // Private-browsing-style storage block - favoriting just won't stick.
+  }
+}
 
 const PK3_CLIENTS = [
   { id: "jk2mv", label: "JK2MV" },
@@ -322,6 +339,34 @@ function renderRecentHighlightsBlock() {
   `;
 }
 
+function favoriteServerBlockHtml() {
+  const address = getFavoriteServer();
+  if (!address) return "";
+  const data = serverStatusCache[address];
+  if (data === undefined) {
+    loadServerStatus(address);
+    return `<div class="favorite-server-bar"><p class="detail-status">Checking your favorite server...</p></div>`;
+  }
+  if (data.error) {
+    return `<div class="favorite-server-bar">
+      <span class="favorite-server-name">Favorite server offline</span>
+      <span class="server-meta">${address}</span>
+    </div>`;
+  }
+  const installedJoinable = JOINABLE_CLIENTS.filter((name) => modState[name]?.installed);
+  const joinControl =
+    installedJoinable.length === 0
+      ? `<span class="server-meta">Install Tommyternal or JK2MV to join</span>`
+      : `<button class="server-join-btn" data-address="${address}" data-client="${installedJoinable[0]}">Join</button>`;
+  return `
+    <div class="favorite-server-bar">
+      <span class="favorite-server-star">★</span>
+      <span class="favorite-server-name">${stripQuakeColors(data.hostname)}</span>
+      <span class="server-meta">${data.map} &middot; ${data.players.length}/${data.max_clients} players</span>
+      ${joinControl}
+    </div>`;
+}
+
 function renderHomeView(mainEl) {
   const welcome = session
     ? `<div class="home-welcome">
@@ -353,6 +398,7 @@ function renderHomeView(mainEl) {
   mainEl.innerHTML = `
     ${welcome}
     <p class="home-strap">Download, update and launch a client from the sidebar, and see what the playerbase has been up to below.</p>
+    ${favoriteServerBlockHtml()}
     ${renderRecentHighlightsBlock()}
     <p class="home-feed-label">Recent Activity</p>
     ${feedHtml}
@@ -388,32 +434,28 @@ async function joinServer(clientName, address) {
   renderMain();
 }
 
-function serverCardHtml(address) {
-  const data = serverStatusCache[address];
-  if (data === undefined) {
-    loadServerStatus(address);
-    return `<div class="server-card"><p class="detail-status">Querying ${address}...</p></div>`;
+async function loadServerList() {
+  try {
+    const { invoke } = window.__TAURI__.core;
+    serverList = await invoke("list_servers");
+  } catch (err) {
+    serverList = { error: String(err) };
   }
-  if (data.error) {
-    return `<div class="server-card">
-      <p class="server-address">${address}</p>
-      <p class="detail-status">Offline or unreachable (${data.error})</p>
-    </div>`;
-  }
+  if (selected === "__servers__") renderMain();
+}
+
+function serverCardHtml(data) {
+  const isFavorite = getFavoriteServer() === data.address;
   const installedJoinable = JOINABLE_CLIENTS.filter((name) => modState[name]?.installed);
-  let joinHtml;
-  if (installedJoinable.length === 0) {
-    joinHtml = `<p class="detail-status">Install Tommyternal or JK2MV to join this server.</p>`;
-  } else {
-    const options = installedJoinable
-      .map((name) => `<option value="${name}">${mods.find((m) => m.name === name)?.displayName ?? name}</option>`)
-      .join("");
-    joinHtml = `
-      <div class="server-join">
-        <select class="server-client-select">${options}</select>
-        <button class="server-join-btn" data-address="${address}">Join</button>
-      </div>`;
-  }
+  const joinHtml =
+    installedJoinable.length === 0
+      ? `<p class="detail-status">Install Tommyternal or JK2MV to join this server.</p>`
+      : `<div class="server-join">
+          <select class="server-client-select">
+            ${installedJoinable.map((name) => `<option value="${name}">${mods.find((m) => m.name === name)?.displayName ?? name}</option>`).join("")}
+          </select>
+          <button class="server-join-btn" data-address="${data.address}">Join</button>
+        </div>`;
   const playerRows = data.players.length
     ? data.players
         .map((p) => `<li><span>${stripQuakeColors(p.name)}</span><span class="server-player-score">${p.score}</span></li>`)
@@ -422,21 +464,38 @@ function serverCardHtml(address) {
   return `
     <div class="server-card">
       <div class="server-card-header">
-        <h3>${stripQuakeColors(data.hostname)}</h3>
+        <span class="server-card-title">
+          <button class="server-favorite-btn ${isFavorite ? "active" : ""}" data-address="${data.address}" title="${isFavorite ? "Remove favorite" : "Set as favorite"}">${isFavorite ? "★" : "☆"}</button>
+          <h3>${stripQuakeColors(data.hostname)}</h3>
+        </span>
         <span class="server-ping">${data.ping_ms}ms</span>
       </div>
-      <p class="server-meta">${data.map} &middot; ${data.players.length}/${data.max_clients} players &middot; ${address}</p>
+      <p class="server-meta">${data.map} &middot; ${data.players.length}/${data.max_clients} players &middot; ${data.address}</p>
       <ul class="server-player-list">${playerRows}</ul>
       ${joinHtml}
-      <p class="detail-status">${serverJoinMessage[address] ?? ""}</p>
+      <p class="detail-status">${serverJoinMessage[data.address] ?? ""}</p>
     </div>`;
 }
 
 function renderServersView(mainEl) {
+  let listHtml;
+  if (serverList === undefined) {
+    loadServerList();
+    listHtml = `<p class="detail-status">Querying the community master server for live JK2 servers...</p>`;
+  } else if (serverList.error) {
+    listHtml = `<p class="detail-status">Couldn't reach the master server: ${serverList.error}</p>`;
+  } else if (serverList.length === 0) {
+    listHtml = `<p class="detail-status">No servers are online right now.</p>`;
+  } else {
+    listHtml = `<div class="server-list">${serverList.map(serverCardHtml).join("")}</div>`;
+  }
   mainEl.innerHTML = `
-    <div class="detail-header"><h2>Servers</h2></div>
-    <p class="detail-description">Live status for JK2 CTF community servers, queried directly - join in one click with an installed client.</p>
-    <div class="server-list">${SERVERS.map(serverCardHtml).join("")}</div>
+    <div class="detail-header">
+      <h2>Servers</h2>
+      <button class="server-refresh-btn" id="server-refresh-btn">Refresh</button>
+    </div>
+    <p class="detail-description">Live JK2 1.02 servers, queried directly from the community master server - star one as a favorite for a one-click join from Home.</p>
+    ${listHtml}
   `;
 }
 
@@ -1091,8 +1150,22 @@ document.getElementById("main").addEventListener("click", (e) => {
   }
   const joinBtn = e.target.closest(".server-join-btn");
   if (joinBtn) {
-    const clientName = joinBtn.closest(".server-join").querySelector(".server-client-select").value;
+    // The Home favorite bar has no dropdown - it picks a client directly
+    // (data-client) for a true one-click join; the Servers page offers a
+    // choice via a sibling <select> when more than one client is installed.
+    const clientName = joinBtn.dataset.client ?? joinBtn.closest(".server-join").querySelector(".server-client-select").value;
     joinServer(clientName, joinBtn.dataset.address);
+    return;
+  }
+  const favBtn = e.target.closest(".server-favorite-btn");
+  if (favBtn) {
+    setFavoriteServer(getFavoriteServer() === favBtn.dataset.address ? null : favBtn.dataset.address);
+    renderMain();
+    return;
+  }
+  if (e.target.closest("#server-refresh-btn")) {
+    serverList = undefined;
+    renderMain();
   }
 });
 
