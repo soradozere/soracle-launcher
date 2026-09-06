@@ -301,11 +301,16 @@ button.change-folder:hover {
   flex: 1;
   min-width: 0;
   overflow-y: auto;
+  scrollbar-width: none;
   padding: 2rem 2.5rem;
   background:
     radial-gradient(ellipse 130% 100% at 50% 0%, rgba(80, 170, 230, 0.1) 0%, rgba(30, 60, 90, 0.08) 45%, rgba(12, 22, 34, 0.12) 100%),
     linear-gradient(180deg, rgba(18, 40, 62, 0.14), rgba(8, 14, 22, 0.18));
   box-shadow: inset 0 0 100px rgba(70, 160, 220, 0.1);
+}
+
+.main::-webkit-scrollbar {
+  display: none;
 }
 
 .main-empty {
