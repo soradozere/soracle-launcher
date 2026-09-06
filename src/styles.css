@@ -437,6 +437,17 @@ button.change-folder:hover {
   color: var(--bg);
 }
 
+.detail-actions button.uninstall-btn {
+  color: var(--text-dim);
+  background: none;
+  border-color: transparent;
+}
+
+.detail-actions button.uninstall-btn:hover:not(:disabled) {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
 .detail-status {
   font-size: 0.8rem;
   color: var(--text-dim);
@@ -1158,6 +1169,7 @@ button.change-folder:hover {
 }
 
 .server-list-header {
+  max-width: 68rem;
   padding: 0 0.9rem 0.4rem;
   font-family: "SF Mono", ui-monospace, Menlo, monospace;
   font-size: 0.65rem;
@@ -1169,7 +1181,7 @@ button.change-folder:hover {
 .server-list {
   display: flex;
   flex-direction: column;
-  max-width: 68ch;
+  max-width: 68rem;
   background: var(--surface-elevated);
   border: 1px solid var(--border);
   border-radius: 8px;

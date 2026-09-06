@@ -322,6 +322,41 @@ fn installed_status(mod_id: &str, game_root: &std::path::Path) -> InstalledStatu
     }
 }
 
+// Removes exactly what install_mod recorded as this mod's own footprint -
+// not a full "restore game_root to how it looked before," since shared
+// base/ content from other installed clients is left untouched either way.
+fn uninstall_mod(mod_id: &str, game_root: &std::path::Path) -> Result<String, String> {
+    let mut installed_mods = load_installed_mods(game_root);
+    let Some(record) = installed_mods.remove(mod_id) else {
+        return Ok("Nothing to uninstall.".to_string());
+    };
+
+    let mut removed = 0;
+    let mut failed = 0;
+    for rel_path in &record.paths {
+        let path = game_root.join(rel_path);
+        let result = if path.is_dir() {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+        match result {
+            Ok(()) => removed += 1,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {} // already gone
+            Err(_) => failed += 1,
+        }
+    }
+
+    save_installed_mods(game_root, &installed_mods)?;
+    if failed > 0 {
+        Ok(format!(
+            "Removed {removed} item(s); {failed} couldn't be deleted (may need manual cleanup)."
+        ))
+    } else {
+        Ok(format!("Uninstalled ({removed} item(s) removed)."))
+    }
+}
+
 fn check_ownership(
     dest: &std::path::Path,
     game_root: &std::path::Path,
@@ -427,6 +462,12 @@ fn resolve_tommyternal_install(
 fn is_tommyternal_installed(app: tauri::AppHandle) -> Result<InstalledStatus, String> {
     let (_, game_root) = find_jk2_base_and_root(&app)?;
     Ok(installed_status(TOMMYTERNAL_MOD_ID, &game_root))
+}
+
+#[tauri::command]
+fn uninstall_tommyternal(app: tauri::AppHandle) -> Result<String, String> {
+    let (_, game_root) = find_jk2_base_and_root(&app)?;
+    uninstall_mod(TOMMYTERNAL_MOD_ID, &game_root)
 }
 
 #[tauri::command]
@@ -556,6 +597,12 @@ fn is_openjo_installed(app: tauri::AppHandle) -> Result<InstalledStatus, String>
 }
 
 #[tauri::command]
+fn uninstall_openjo(app: tauri::AppHandle) -> Result<String, String> {
+    let (_, game_root) = find_jk2_base_and_root(&app)?;
+    uninstall_mod(OPENJO_MOD_ID, &game_root)
+}
+
+#[tauri::command]
 fn play_openjo(app: tauri::AppHandle) -> Result<String, String> {
     // Single-player only - no +connect support here (see manifest description).
     let (_, game_root) = find_jk2_base_and_root(&app)?;
@@ -596,6 +643,12 @@ fn install_jk2mv(app: tauri::AppHandle, version: String) -> Result<String, Strin
 fn is_jk2mv_installed(app: tauri::AppHandle) -> Result<InstalledStatus, String> {
     let (_, game_root) = find_jk2_base_and_root(&app)?;
     Ok(installed_status(JK2MV_MOD_ID, &game_root))
+}
+
+#[tauri::command]
+fn uninstall_jk2mv(app: tauri::AppHandle) -> Result<String, String> {
+    let (_, game_root) = find_jk2_base_and_root(&app)?;
+    uninstall_mod(JK2MV_MOD_ID, &game_root)
 }
 
 #[tauri::command]
@@ -934,8 +987,11 @@ struct ServerStatus {
     ping_ms: u64,
 }
 
-#[tauri::command]
-fn query_server_status(address: String) -> Result<ServerStatus, String> {
+// The actual blocking work (UDP send/recv with a multi-second timeout) -
+// kept separate from the #[tauri::command] wrapper below so list_servers can
+// call it directly from its own already-spawned OS threads, without piling
+// another layer of async/spawn_blocking on top per-server.
+fn query_server_status_blocking(address: String) -> Result<ServerStatus, String> {
     use std::net::UdpSocket;
     use std::time::{Duration, Instant};
 
@@ -1006,6 +1062,17 @@ fn query_server_status(address: String) -> Result<ServerStatus, String> {
     })
 }
 
+// Runs the actual query on Tauri's blocking thread pool rather than
+// whatever thread dispatches the command - a single query only blocks for
+// up to a few seconds, but there's no reason to risk it landing on
+// something IPC/UI-adjacent (see list_servers below for why this matters).
+#[tauri::command]
+async fn query_server_status(address: String) -> Result<ServerStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || query_server_status_blocking(address))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 // JK2's community master server - the same one NWH and Tommyternal both
 // have baked in (confirmed via `strings` on the real binaries: both
 // reference "master.jk2mv.org" alongside the long-dead original
@@ -1069,22 +1136,32 @@ fn query_master_servers() -> Result<Vec<String>, String> {
     Ok(addresses)
 }
 
+// This fans out to ~20-30 OS threads, each blocking on its own UDP socket
+// for up to a few seconds - genuinely heavy blocking work, not something to
+// risk running on whatever thread Tauri happens to dispatch commands on.
+// spawn_blocking guarantees it runs on the blocking pool instead (this was
+// very likely the cause of the launcher appearing to hang/crash the first
+// time someone opened the Servers page).
 #[tauri::command]
-fn list_servers() -> Result<Vec<ServerStatus>, String> {
-    let addresses = query_master_servers()?;
-    let handles: Vec<_> = addresses
-        .into_iter()
-        .map(|address| std::thread::spawn(move || query_server_status(address)))
-        .collect();
+async fn list_servers() -> Result<Vec<ServerStatus>, String> {
+    tauri::async_runtime::spawn_blocking(|| -> Result<Vec<ServerStatus>, String> {
+        let addresses = query_master_servers()?;
+        let handles: Vec<_> = addresses
+            .into_iter()
+            .map(|address| std::thread::spawn(move || query_server_status_blocking(address)))
+            .collect();
 
-    let mut servers: Vec<ServerStatus> = handles
-        .into_iter()
-        .filter_map(|h| h.join().ok())
-        .filter_map(|r| r.ok())
-        .collect();
-    // Busiest servers first - the ones people actually want to see.
-    servers.sort_by(|a, b| b.players.len().cmp(&a.players.len()));
-    Ok(servers)
+        let mut servers: Vec<ServerStatus> = handles
+            .into_iter()
+            .filter_map(|h| h.join().ok())
+            .filter_map(|r| r.ok())
+            .collect();
+        // Busiest servers first - the ones people actually want to see.
+        servers.sort_by(|a, b| b.players.len().cmp(&a.players.len()));
+        Ok(servers)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1109,14 +1186,17 @@ pub fn run() {
             install_tommyternal,
             is_tommyternal_installed,
             play_tommyternal,
+            uninstall_tommyternal,
             preview_install_openjo,
             install_openjo,
             is_openjo_installed,
             play_openjo,
+            uninstall_openjo,
             preview_install_jk2mv,
             install_jk2mv,
             is_jk2mv_installed,
             play_jk2mv,
+            uninstall_jk2mv,
             list_pk3_mods,
             pick_pk3_files,
             add_pk3_mod,

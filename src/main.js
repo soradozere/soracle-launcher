@@ -10,6 +10,7 @@ const MOD_HANDLERS = {
     installCommand: "install_tommyternal",
     checkInstalledCommand: "is_tommyternal_installed",
     playCommand: "play_tommyternal",
+    uninstallCommand: "uninstall_tommyternal",
   },
   OpenJO: {
     filename: "openjo_macos_arm64.tar.gz",
@@ -17,6 +18,7 @@ const MOD_HANDLERS = {
     installCommand: "install_openjo",
     checkInstalledCommand: "is_openjo_installed",
     playCommand: "play_openjo",
+    uninstallCommand: "uninstall_openjo",
   },
   JK2MV: {
     filename: "jk2mv_macos_x86_64.dmg",
@@ -24,6 +26,7 @@ const MOD_HANDLERS = {
     installCommand: "install_jk2mv",
     checkInstalledCommand: "is_jk2mv_installed",
     playCommand: "play_jk2mv",
+    uninstallCommand: "uninstall_jk2mv",
   },
 };
 
@@ -354,10 +357,22 @@ function favoriteServerBlockHtml() {
     </div>`;
   }
   const installedJoinable = JOINABLE_CLIENTS.filter((name) => modState[name]?.installed);
-  const joinControl =
-    installedJoinable.length === 0
-      ? `<span class="server-meta">Install Tommyternal or JK2MV to join</span>`
-      : `<button class="server-join-btn" data-address="${address}" data-client="${installedJoinable[0]}">Join</button>`;
+  let joinControl;
+  if (installedJoinable.length === 0) {
+    joinControl = `<span class="server-meta">Install Tommyternal or JK2MV to join</span>`;
+  } else if (installedJoinable.length === 1) {
+    joinControl = `<button class="server-join-btn" data-address="${address}" data-client="${installedJoinable[0]}">Join</button>`;
+  } else {
+    // More than one option installed - let them pick, same control as the
+    // Servers page, instead of silently guessing which one they meant.
+    joinControl = `
+      <div class="server-join">
+        <select class="server-client-select">
+          ${installedJoinable.map((name) => `<option value="${name}">${mods.find((m) => m.name === name)?.displayName ?? name}</option>`).join("")}
+        </select>
+        <button class="server-join-btn" data-address="${address}">Join</button>
+      </div>`;
+  }
   return `
     <div class="favorite-server-bar">
       <span class="favorite-server-star">★</span>
@@ -406,8 +421,12 @@ function renderHomeView(mainEl) {
 }
 
 // Strips idTech3 caret color codes (^1, ^4, etc.) for plain-text display.
+// Strips idTech3 caret color codes (^1, ^7, etc.) and raw control bytes some
+// servers throw into their hostname/player names (seen in the wild as
+// literal \x01 bytes, presumably an old anti-spoof or client-specific trick)
+// - both render as garbled box glyphs otherwise.
 function stripQuakeColors(s) {
-  return (s ?? "").replace(/\^[0-9]/g, "");
+  return (s ?? "").replace(/\^[0-9]/g, "").replace(/[\x00-\x1f]/g, "");
 }
 
 const serverStatusLoading = new Set(); // addresses with a query already in flight
@@ -937,6 +956,7 @@ function renderMain() {
            <button data-action="play" ${state.busy ? "disabled" : ""}>Play</button>`
         : `<button data-action="update" ${state.busy ? "disabled" : ""}>Update</button>
            <button data-action="play" ${state.busy ? "disabled" : ""}>Play</button>`;
+      actions += `<button class="uninstall-btn" data-action="uninstall" ${state.busy ? "disabled" : ""}>Uninstall</button>`;
     } else {
       actions = `<button data-action="install" ${state.busy ? "disabled" : ""}>Install</button>`;
     }
@@ -975,6 +995,12 @@ async function handleAction(name, action) {
   const handler = MOD_HANDLERS[name];
   const mod = mods.find((m) => m.name === name);
   const { invoke } = window.__TAURI__.core;
+  if (
+    action === "uninstall" &&
+    !confirm(`Uninstall ${mod.displayName ?? mod.name}? This removes it from your game folder - your PK3 mods and player data aren't touched.`)
+  ) {
+    return;
+  }
   modState[name] = { ...modState[name], busy: true, message: "Working..." };
   renderSidebar();
   renderMain();
@@ -1002,6 +1028,13 @@ async function handleAction(name, action) {
       modState[name].message = "Launching...";
       renderMain();
       modState[name].message = await invoke(handler.playCommand);
+    } else if (action === "uninstall") {
+      modState[name].message = "Uninstalling...";
+      renderMain();
+      const result = await invoke(handler.uninstallCommand);
+      modState[name].installed = false;
+      modState[name].installedVersion = undefined;
+      modState[name].message = result;
     }
   } catch (err) {
     modState[name].message = `Error: ${err}`;
