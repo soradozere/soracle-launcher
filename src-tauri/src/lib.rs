@@ -191,7 +191,10 @@ fn get_game_folder_override(app: tauri::AppHandle) -> Option<String> {
 }
 
 #[tauri::command]
-fn pick_game_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
+async fn pick_game_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    // Same crash as pick_pk3_files used to hit: blocking_pick_folder's own
+    // docs say not to call it on the main thread - this command was missed
+    // when that fix went in for the PK3 picker.
     let picked = app
         .dialog()
         .file()
