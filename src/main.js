@@ -121,13 +121,29 @@ async function clearSession() {
   }
 }
 
-async function downloadFile(url, filename) {
+async function sha256Hex(bytes) {
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+// Downloads and writes the file regardless of whether it matches
+// expectedSha256 - a mismatch is a signal to show the user, not a reason to
+// block them (see the README's "Verifying a new client release" section for
+// why: an upstream release changing this file is indistinguishable, by hash
+// alone, from a compromised one, and treating every routine release as a
+// hard failure would just make people click through it out of habit anyway).
+async function downloadFile(url, filename, expectedSha256) {
   const { fetch } = window.__TAURI__.http;
   const { writeFile, mkdir, BaseDirectory } = window.__TAURI__.fs;
   await mkdir("", { baseDir: BaseDirectory.AppData, recursive: true });
   const res = await fetch(url);
   const bytes = new Uint8Array(await res.arrayBuffer());
   await writeFile(filename, bytes, { baseDir: BaseDirectory.AppData });
+  if (!expectedSha256) return { verified: null };
+  const actual = await sha256Hex(bytes);
+  return { verified: actual.toLowerCase() === expectedSha256.toLowerCase(), actual };
 }
 
 function renderSidebar() {
@@ -871,7 +887,13 @@ async function handleAction(name, action) {
     if (action === "install" || action === "update") {
       modState[name].message = "Downloading...";
       renderMain();
-      await downloadFile(mod.url, handler.filename);
+      const { verified, actual } = await downloadFile(mod.url, handler.filename, mod.sha256);
+      let warning = "";
+      if (verified === false) {
+        warning =
+          " ⚠️ Checksum didn't match the pinned release - could just mean there's a newer upstream build we haven't verified yet, but treat it with some caution.";
+        console.warn(`Checksum mismatch for ${name}: expected ${mod.sha256}, got ${actual}`);
+      }
       modState[name].message = "Extracting...";
       renderMain();
       await invoke(handler.extractCommand);
@@ -880,7 +902,7 @@ async function handleAction(name, action) {
       await invoke(handler.installCommand, { version: mod.version });
       modState[name].installed = true;
       modState[name].installedVersion = mod.version;
-      modState[name].message = "Done.";
+      modState[name].message = `Done.${warning}`;
     } else if (action === "play") {
       modState[name].message = "Launching...";
       renderMain();
