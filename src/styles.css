@@ -197,14 +197,18 @@ body {
 .game-folder-row {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  margin-bottom: 0.6rem;
+  gap: 0.45rem;
 }
 
 .game-folder-desc {
-  font-size: 0.82rem;
+  flex: 1;
+  min-width: 0;
+  font-size: 0.76rem;
   font-weight: 500;
   color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .game-folder-desc a {
@@ -231,13 +235,14 @@ body {
 }
 
 button.change-folder {
+  flex-shrink: 0;
   font-family: inherit;
-  font-size: 0.74rem;
+  font-size: 0.72rem;
   color: var(--text-bright);
   background: var(--surface-elevated);
   border: 1px solid var(--border);
   border-radius: 5px;
-  padding: 0.3rem 0.55rem;
+  padding: 0.25rem 0.5rem;
   cursor: pointer;
 }
 
@@ -806,6 +811,43 @@ button.change-folder:hover {
   margin: 0;
 }
 
+.faq-update-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  max-width: 60ch;
+  margin-top: 1.2rem;
+  padding: 0.8rem 1rem;
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.faq-update-info {
+  font-family: "SF Mono", ui-monospace, Menlo, monospace;
+  font-size: 0.78rem;
+  color: var(--text-dim);
+}
+
+.faq-update-btn {
+  flex-shrink: 0;
+  font-family: inherit;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--primary);
+  background: var(--surface);
+  border: 1px solid var(--primary-dim);
+  border-radius: 7px;
+  padding: 0.45rem 1rem;
+  cursor: pointer;
+}
+
+.faq-update-btn:hover {
+  background: var(--primary-dim);
+  color: var(--bg);
+}
+
 .pk3-list {
   display: flex;
   flex-direction: column;
@@ -1107,42 +1149,82 @@ button.change-folder:hover {
 
 /* Servers view */
 
+.server-list-header,
+.server-row-summary {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1.6fr) minmax(0, 1.1fr) 56px 50px 14px;
+  align-items: center;
+  gap: 0.7rem;
+}
+
+.server-list-header {
+  padding: 0 0.9rem 0.4rem;
+  font-family: "SF Mono", ui-monospace, Menlo, monospace;
+  font-size: 0.65rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
 .server-list {
   display: flex;
   flex-direction: column;
-  gap: 0.9rem;
-  max-width: 60ch;
-}
-
-.server-card {
-  padding: 1rem 1.1rem;
+  max-width: 68ch;
   background: var(--surface-elevated);
   border: 1px solid var(--border);
   border-radius: 8px;
+  overflow: hidden;
 }
 
-.server-card-header {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 0.6rem;
+.server-row + .server-row {
+  border-top: 1px solid var(--border);
 }
 
-.server-card-title {
-  display: flex;
-  align-items: baseline;
-  gap: 0.4rem;
-  min-width: 0;
+.server-row-summary {
+  padding: 0.55rem 0.9rem;
+  cursor: pointer;
 }
 
-.server-card-header h3 {
-  margin: 0;
+.server-row-summary:hover {
+  background: var(--surface);
+}
+
+.server-row.expanded .server-row-summary {
+  background: var(--surface);
+}
+
+.server-row-name {
   font-family: var(--font-display);
-  font-size: 1rem;
+  font-size: 0.88rem;
   color: var(--text-bright);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.server-row-map,
+.server-row-players,
+.server-row-ping {
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.server-row-ping {
+  font-family: "SF Mono", ui-monospace, Menlo, monospace;
+  color: var(--primary);
+}
+
+.server-row-caret {
+  color: var(--text-dim);
+  font-size: 0.7rem;
+  text-align: center;
+}
+
+.server-row-details {
+  padding: 0 0.9rem 0.9rem;
 }
 
 .server-favorite-btn {
@@ -1180,17 +1262,10 @@ button.change-folder:hover {
   color: var(--bg);
 }
 
-.server-ping {
+.server-meta {
+  margin: 0 0 0.7rem;
+  font-size: 0.78rem;
   font-family: "SF Mono", ui-monospace, Menlo, monospace;
-  font-size: 0.75rem;
-  color: var(--primary);
-  flex-shrink: 0;
-}
-
-.server-meta,
-.server-address {
-  margin: 0.2rem 0 0.7rem;
-  font-size: 0.8rem;
   color: var(--text-dim);
 }
 

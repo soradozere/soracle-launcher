@@ -410,14 +410,26 @@ function stripQuakeColors(s) {
   return (s ?? "").replace(/\^[0-9]/g, "");
 }
 
+const serverStatusLoading = new Set(); // addresses with a query already in flight
+
+// Only used for the Home favorite-server bar (the Servers page gets its
+// data from list_servers instead) - a single address, queried once and
+// cached until the app restarts.
 async function loadServerStatus(address) {
+  if (serverStatusLoading.has(address)) return;
+  serverStatusLoading.add(address);
   try {
     const { invoke } = window.__TAURI__.core;
     serverStatusCache[address] = await invoke("query_server_status", { address });
   } catch (err) {
     serverStatusCache[address] = { error: String(err) };
+  } finally {
+    serverStatusLoading.delete(address);
   }
-  if (selected === "__servers__") renderMain();
+  // This is only ever rendered on Home (the favorite-server bar) - re-render
+  // it there regardless of what triggered the load, not just when it
+  // happens to still be the active view by coincidence.
+  if (selected === "__home__") renderMain();
 }
 
 async function joinServer(clientName, address) {
@@ -444,8 +456,23 @@ async function loadServerList() {
   if (selected === "__servers__") renderMain();
 }
 
-function serverCardHtml(data) {
+const expandedServers = new Set(); // addresses currently expanded in the Servers list
+
+function serverRowHtml(data) {
   const isFavorite = getFavoriteServer() === data.address;
+  const isExpanded = expandedServers.has(data.address);
+  const summaryHtml = `
+    <div class="server-row-summary" data-address="${data.address}">
+      <button class="server-favorite-btn ${isFavorite ? "active" : ""}" data-address="${data.address}" title="${isFavorite ? "Remove favorite" : "Set as favorite"}">${isFavorite ? "★" : "☆"}</button>
+      <span class="server-row-name">${stripQuakeColors(data.hostname)}</span>
+      <span class="server-row-map">${data.map}</span>
+      <span class="server-row-players">${data.players.length}/${data.max_clients}</span>
+      <span class="server-row-ping">${data.ping_ms}ms</span>
+      <span class="server-row-caret">${isExpanded ? "▾" : "▸"}</span>
+    </div>`;
+  if (!isExpanded) {
+    return `<div class="server-row">${summaryHtml}</div>`;
+  }
   const installedJoinable = JOINABLE_CLIENTS.filter((name) => modState[name]?.installed);
   const joinHtml =
     installedJoinable.length === 0
@@ -462,18 +489,14 @@ function serverCardHtml(data) {
         .join("")
     : `<li class="server-empty">No players connected</li>`;
   return `
-    <div class="server-card">
-      <div class="server-card-header">
-        <span class="server-card-title">
-          <button class="server-favorite-btn ${isFavorite ? "active" : ""}" data-address="${data.address}" title="${isFavorite ? "Remove favorite" : "Set as favorite"}">${isFavorite ? "★" : "☆"}</button>
-          <h3>${stripQuakeColors(data.hostname)}</h3>
-        </span>
-        <span class="server-ping">${data.ping_ms}ms</span>
+    <div class="server-row expanded">
+      ${summaryHtml}
+      <div class="server-row-details">
+        <p class="server-meta">${data.address}</p>
+        <ul class="server-player-list">${playerRows}</ul>
+        ${joinHtml}
+        <p class="detail-status">${serverJoinMessage[data.address] ?? ""}</p>
       </div>
-      <p class="server-meta">${data.map} &middot; ${data.players.length}/${data.max_clients} players &middot; ${data.address}</p>
-      <ul class="server-player-list">${playerRows}</ul>
-      ${joinHtml}
-      <p class="detail-status">${serverJoinMessage[data.address] ?? ""}</p>
     </div>`;
 }
 
@@ -487,14 +510,23 @@ function renderServersView(mainEl) {
   } else if (serverList.length === 0) {
     listHtml = `<p class="detail-status">No servers are online right now.</p>`;
   } else {
-    listHtml = `<div class="server-list">${serverList.map(serverCardHtml).join("")}</div>`;
+    listHtml = `
+      <div class="server-list-header">
+        <span class="server-favorite-btn"></span>
+        <span class="server-row-name">Server</span>
+        <span class="server-row-map">Map</span>
+        <span class="server-row-players">Players</span>
+        <span class="server-row-ping">Ping</span>
+        <span class="server-row-caret"></span>
+      </div>
+      <div class="server-list">${serverList.map(serverRowHtml).join("")}</div>`;
   }
   mainEl.innerHTML = `
     <div class="detail-header">
       <h2>Servers</h2>
       <button class="server-refresh-btn" id="server-refresh-btn">Refresh</button>
     </div>
-    <p class="detail-description">Live JK2 1.02 servers, queried directly from the community master server - star one as a favorite for a one-click join from Home.</p>
+    <p class="detail-description">Live JK2 1.02 servers, queried directly from the community master server - star a favorite for a one-click join from Home, click a row for details.</p>
     ${listHtml}
   `;
 }
@@ -505,6 +537,10 @@ function renderFaqView(mainEl) {
     <div class="detail-header"><h2>Support / FAQ</h2></div>
     <div class="faq-list">
       ${FAQ_ENTRIES.map((e) => `<div class="faq-entry"><p class="faq-q">${e.q}</p><p class="faq-a">${e.a}</p></div>`).join("")}
+    </div>
+    <div class="faq-update-row">
+      <span class="faq-update-info">JK2 Launcher v0.1 preview</span>
+      <button class="faq-update-btn" id="faq-update-btn">${updateLabelText}</button>
     </div>
   `;
 }
@@ -991,10 +1027,10 @@ async function checkGameFolder() {
     await invoke("locate_jk2");
     dot.classList.remove("missing");
     const override = await invoke("get_game_folder_override");
-    desc.textContent = override ? "Currently using custom folder" : "Currently using Steam install";
+    desc.textContent = override ? "Custom folder" : "Steam install";
   } catch (err) {
     dot.classList.add("missing");
-    desc.innerHTML = `Select folder or <a href="${STEAM_STORE_URL}" target="_blank" rel="noopener">buy the game on Steam</a>`;
+    desc.innerHTML = `Not found — <a href="${STEAM_STORE_URL}" target="_blank" rel="noopener">buy on Steam</a>`;
     console.error("Game folder not found:", err);
   }
 }
@@ -1018,9 +1054,11 @@ async function refreshModStates() {
 
 let pendingUpdate = null;
 let updateBusy = false;
+let updateLabelText = "Check for Updates";
 
 function setUpdateLabel(text) {
-  const el = document.getElementById("update-nav-label");
+  updateLabelText = text;
+  const el = document.getElementById("faq-update-btn");
   if (el) el.textContent = text;
 }
 
@@ -1096,10 +1134,6 @@ document.getElementById("sign-out-nav-row").addEventListener("click", () => {
   renderSidebar();
   renderMain();
 });
-document.getElementById("update-nav-row").addEventListener("click", () => {
-  if (pendingUpdate) installPendingUpdate();
-  else checkForUpdates(false);
-});
 
 document.getElementById("client-list").addEventListener("click", (e) => {
   const row = e.target.closest(".client-row");
@@ -1114,6 +1148,11 @@ document.getElementById("main").addEventListener("click", (e) => {
   }
   if (e.target.closest("#back-to-home-link")) {
     selectClient("__home__");
+    return;
+  }
+  if (e.target.closest("#faq-update-btn")) {
+    if (pendingUpdate) installPendingUpdate();
+    else checkForUpdates(false);
     return;
   }
   if (e.target.closest("#highlight-scroll-left")) {
@@ -1165,6 +1204,14 @@ document.getElementById("main").addEventListener("click", (e) => {
   }
   if (e.target.closest("#server-refresh-btn")) {
     serverList = undefined;
+    renderMain();
+    return;
+  }
+  const serverRow = e.target.closest(".server-row-summary");
+  if (serverRow) {
+    const address = serverRow.dataset.address;
+    if (expandedServers.has(address)) expandedServers.delete(address);
+    else expandedServers.add(address);
     renderMain();
   }
 });
