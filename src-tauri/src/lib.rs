@@ -430,13 +430,16 @@ fn is_tommyternal_installed(app: tauri::AppHandle) -> Result<InstalledStatus, St
 }
 
 #[tauri::command]
-fn play_tommyternal(app: tauri::AppHandle) -> Result<String, String> {
+fn play_tommyternal(app: tauri::AppHandle, connect_address: Option<String>) -> Result<String, String> {
     let (_, game_root) = find_jk2_base_and_root(&app)?;
     let binary = game_root.join("eternaljk2mvmp");
     let mut cmd = std::process::Command::new(&binary);
     cmd.current_dir(&game_root);
     if client_has_pk3_mods(&game_root, TOMMYTERNAL_MOD_ID) {
         cmd.args(["+set", "fs_game", &client_mod_folder_name(TOMMYTERNAL_MOD_ID)]);
+    }
+    if let Some(address) = &connect_address {
+        cmd.args(["+connect", address]);
     }
     let mut child = cmd.spawn().map_err(|e| e.to_string())?;
     std::thread::spawn(move || {
@@ -554,6 +557,7 @@ fn is_openjo_installed(app: tauri::AppHandle) -> Result<InstalledStatus, String>
 
 #[tauri::command]
 fn play_openjo(app: tauri::AppHandle) -> Result<String, String> {
+    // Single-player only - no +connect support here (see manifest description).
     let (_, game_root) = find_jk2_base_and_root(&app)?;
     let app_bundle = game_root.join("openjo_sp.arm64.app");
     let mut cmd = std::process::Command::new("open");
@@ -595,13 +599,27 @@ fn is_jk2mv_installed(app: tauri::AppHandle) -> Result<InstalledStatus, String> 
 }
 
 #[tauri::command]
-fn play_jk2mv(app: tauri::AppHandle) -> Result<String, String> {
+fn play_jk2mv(app: tauri::AppHandle, connect_address: Option<String>) -> Result<String, String> {
     let (_, game_root) = find_jk2_base_and_root(&app)?;
     let app_bundle = game_root.join("jk2mvmp.app");
     let mut cmd = std::process::Command::new("open");
     cmd.arg(&app_bundle);
+    // `open --args` only accepts one --args flag - everything after it is
+    // passed straight through to the app, so both +set and +connect (when
+    // present) have to be collected first and appended together.
+    let mut extra_args: Vec<String> = Vec::new();
     if client_has_pk3_mods(&game_root, JK2MV_MOD_ID) {
-        cmd.args(["--args", "+set", "fs_game", &client_mod_folder_name(JK2MV_MOD_ID)]);
+        extra_args.push("+set".to_string());
+        extra_args.push("fs_game".to_string());
+        extra_args.push(client_mod_folder_name(JK2MV_MOD_ID));
+    }
+    if let Some(address) = &connect_address {
+        extra_args.push("+connect".to_string());
+        extra_args.push(address.clone());
+    }
+    if !extra_args.is_empty() {
+        cmd.arg("--args");
+        cmd.args(&extra_args);
     }
     cmd.spawn().map_err(|e| e.to_string())?;
     Ok(format!("Launched {}", app_bundle.display()))
@@ -894,6 +912,98 @@ fn remove_pk3_mod(app: tauri::AppHandle, filename: String) -> Result<(), String>
     Ok(())
 }
 
+// --- Server browser: direct-connect + live status via the idTech3
+// out-of-band UDP protocol (the same "getstatus" query every Q3-engine
+// server browser uses - no server-side cooperation beyond the engine
+// itself needed).
+
+#[derive(serde::Serialize)]
+struct ServerPlayer {
+    name: String,
+    score: i32,
+    ping: i32,
+}
+
+#[derive(serde::Serialize)]
+struct ServerStatus {
+    hostname: String,
+    map: String,
+    max_clients: i32,
+    players: Vec<ServerPlayer>,
+    ping_ms: u64,
+}
+
+#[tauri::command]
+fn query_server_status(address: String) -> Result<ServerStatus, String> {
+    use std::net::UdpSocket;
+    use std::time::{Duration, Instant};
+
+    let socket = UdpSocket::bind("0.0.0.0:0").map_err(|e| e.to_string())?;
+    socket
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .map_err(|e| e.to_string())?;
+
+    // Out-of-band packets are prefixed with four 0xFF bytes.
+    let mut packet: Vec<u8> = vec![0xFF, 0xFF, 0xFF, 0xFF];
+    packet.extend_from_slice(b"getstatus");
+
+    let start = Instant::now();
+    socket
+        .send_to(&packet, &address)
+        .map_err(|e| format!("Couldn't reach {}: {}", address, e))?;
+
+    let mut buf = [0u8; 8192];
+    let (len, _) = socket
+        .recv_from(&mut buf)
+        .map_err(|e| format!("No response from {}: {}", address, e))?;
+    let ping_ms = start.elapsed().as_millis() as u64;
+
+    // Response: <ff ff ff ff>statusResponse\n\key\value\key\value...\n
+    // followed by one "score ping "name"" line per connected player.
+    let text = String::from_utf8_lossy(&buf[..len]);
+    let mut sections = text.splitn(2, '\n');
+    sections.next(); // "\xff\xff\xff\xffstatusResponse" header line
+    let rest = sections.next().unwrap_or("");
+    let mut rest_lines = rest.split('\n');
+
+    let mut info = std::collections::HashMap::new();
+    if let Some(info_line) = rest_lines.next() {
+        let parts: Vec<&str> = info_line.split('\\').collect();
+        let mut i = 1; // parts[0] is empty - the line starts with a backslash
+        while i + 1 < parts.len() {
+            info.insert(parts[i].to_string(), parts[i + 1].to_string());
+            i += 2;
+        }
+    }
+
+    let mut players = Vec::new();
+    for line in rest_lines {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(quote) = line.find('"') {
+            let (head, name_part) = line.split_at(quote);
+            let mut head_fields = head.split_whitespace();
+            let score = head_fields.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+            let ping = head_fields.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+            players.push(ServerPlayer {
+                name: name_part.trim_matches('"').to_string(),
+                score,
+                ping,
+            });
+        }
+    }
+
+    Ok(ServerStatus {
+        hostname: info.get("sv_hostname").cloned().unwrap_or_else(|| address.clone()),
+        map: info.get("mapname").cloned().unwrap_or_default(),
+        max_clients: info.get("sv_maxclients").and_then(|s| s.parse().ok()).unwrap_or(0),
+        players,
+        ping_ms,
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -929,7 +1039,8 @@ pub fn run() {
             add_pk3_mod,
             add_pk3_mod_from_download,
             set_pk3_mod_targets,
-            remove_pk3_mod
+            remove_pk3_mod,
+            query_server_status
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -27,6 +27,12 @@ const MOD_HANDLERS = {
   },
 };
 
+// Known community servers, queried live via the idTech3 getstatus protocol
+// (see query_server_status in the Rust backend). Only clients that actually
+// speak the multiplayer protocol can join - OpenJO is single-player only.
+const SERVERS = ["192.223.24.74:28070"];
+const JOINABLE_CLIENTS = ["TommyternalJK2MV", "JK2MV"];
+
 let mods = [];
 let modState = {};
 let selected = "__home__";
@@ -38,6 +44,9 @@ const statsCache = {}; // player name -> stats data, null (not found), or { erro
 
 let pk3Mods = null; // list from list_pk3_mods, or null while loading
 let pk3ModsError = null;
+
+const serverStatusCache = {}; // address -> ServerStatus, undefined while loading, or { error }
+const serverJoinMessage = {}; // address -> status text shown under that server's card
 
 const PK3_CLIENTS = [
   { id: "jk2mv", label: "JK2MV" },
@@ -124,6 +133,7 @@ async function downloadFile(url, filename) {
 function renderSidebar() {
   document.getElementById("home-nav-row").classList.toggle("active", selected === "__home__");
   document.getElementById("mods-nav-row").classList.toggle("active", selected === "__mods__");
+  document.getElementById("servers-nav-row").classList.toggle("active", selected === "__servers__");
   document.getElementById("faq-nav-row").classList.toggle("active", selected === "__faq__");
   document.getElementById("sign-out-section").hidden = !session;
   document.getElementById("client-list").innerHTML = mods
@@ -330,6 +340,87 @@ function renderHomeView(mainEl) {
     ${renderRecentHighlightsBlock()}
     <p class="home-feed-label">Recent Activity</p>
     ${feedHtml}
+  `;
+}
+
+// Strips idTech3 caret color codes (^1, ^4, etc.) for plain-text display.
+function stripQuakeColors(s) {
+  return (s ?? "").replace(/\^[0-9]/g, "");
+}
+
+async function loadServerStatus(address) {
+  try {
+    const { invoke } = window.__TAURI__.core;
+    serverStatusCache[address] = await invoke("query_server_status", { address });
+  } catch (err) {
+    serverStatusCache[address] = { error: String(err) };
+  }
+  if (selected === "__servers__") renderMain();
+}
+
+async function joinServer(clientName, address) {
+  const handler = MOD_HANDLERS[clientName];
+  const { invoke } = window.__TAURI__.core;
+  serverJoinMessage[address] = "Launching...";
+  renderMain();
+  try {
+    await invoke(handler.playCommand, { connectAddress: address });
+    serverJoinMessage[address] = "";
+  } catch (err) {
+    serverJoinMessage[address] = `Error: ${err}`;
+  }
+  renderMain();
+}
+
+function serverCardHtml(address) {
+  const data = serverStatusCache[address];
+  if (data === undefined) {
+    loadServerStatus(address);
+    return `<div class="server-card"><p class="detail-status">Querying ${address}...</p></div>`;
+  }
+  if (data.error) {
+    return `<div class="server-card">
+      <p class="server-address">${address}</p>
+      <p class="detail-status">Offline or unreachable (${data.error})</p>
+    </div>`;
+  }
+  const installedJoinable = JOINABLE_CLIENTS.filter((name) => modState[name]?.installed);
+  let joinHtml;
+  if (installedJoinable.length === 0) {
+    joinHtml = `<p class="detail-status">Install Tommyternal or JK2MV to join this server.</p>`;
+  } else {
+    const options = installedJoinable
+      .map((name) => `<option value="${name}">${mods.find((m) => m.name === name)?.displayName ?? name}</option>`)
+      .join("");
+    joinHtml = `
+      <div class="server-join">
+        <select class="server-client-select">${options}</select>
+        <button class="server-join-btn" data-address="${address}">Join</button>
+      </div>`;
+  }
+  const playerRows = data.players.length
+    ? data.players
+        .map((p) => `<li><span>${stripQuakeColors(p.name)}</span><span class="server-player-score">${p.score}</span></li>`)
+        .join("")
+    : `<li class="server-empty">No players connected</li>`;
+  return `
+    <div class="server-card">
+      <div class="server-card-header">
+        <h3>${stripQuakeColors(data.hostname)}</h3>
+        <span class="server-ping">${data.ping_ms}ms</span>
+      </div>
+      <p class="server-meta">${data.map} &middot; ${data.players.length}/${data.max_clients} players &middot; ${address}</p>
+      <ul class="server-player-list">${playerRows}</ul>
+      ${joinHtml}
+      <p class="detail-status">${serverJoinMessage[address] ?? ""}</p>
+    </div>`;
+}
+
+function renderServersView(mainEl) {
+  mainEl.innerHTML = `
+    <div class="detail-header"><h2>Servers</h2></div>
+    <p class="detail-description">Live status for JK2 CTF community servers, queried directly - join in one click with an installed client.</p>
+    <div class="server-list">${SERVERS.map(serverCardHtml).join("")}</div>
   `;
 }
 
@@ -715,6 +806,10 @@ function renderMain() {
     renderModsView(mainEl);
     return;
   }
+  if (selected === "__servers__") {
+    renderServersView(mainEl);
+    return;
+  }
   const mod = mods.find((m) => m.name === selected);
   if (!mod) {
     mainEl.innerHTML = `<div class="main-empty">Select a client</div>`;
@@ -912,6 +1007,7 @@ async function init() {
 
 document.getElementById("home-nav-row").addEventListener("click", () => selectClient("__home__"));
 document.getElementById("mods-nav-row").addEventListener("click", () => selectClient("__mods__"));
+document.getElementById("servers-nav-row").addEventListener("click", () => selectClient("__servers__"));
 document.getElementById("faq-nav-row").addEventListener("click", () => selectClient("__faq__"));
 document.getElementById("sign-out-nav-row").addEventListener("click", () => {
   session = null;
@@ -969,6 +1065,12 @@ document.getElementById("main").addEventListener("click", (e) => {
   if (e.target.closest("#monolith-next-page")) {
     monolithPage += 1;
     document.getElementById("monolith-results").innerHTML = renderMonolithResults();
+    return;
+  }
+  const joinBtn = e.target.closest(".server-join-btn");
+  if (joinBtn) {
+    const clientName = joinBtn.closest(".server-join").querySelector(".server-client-select").value;
+    joinServer(clientName, joinBtn.dataset.address);
   }
 });
 
