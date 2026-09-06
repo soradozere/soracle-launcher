@@ -34,6 +34,8 @@ const MOD_HANDLERS = {
 // OpenJO is single-player only.
 const JOINABLE_CLIENTS = ["TommyternalJK2MV", "JK2MV"];
 const FAVORITE_SERVER_KEY = "jk2launcher.favoriteServer";
+const FAVORITE_SERVER_SEEDED_KEY = "jk2launcher.favoriteServerSeeded";
+const DEFAULT_FAVORITE_SERVER = "192.223.24.74:28070"; // NA East
 
 let mods = [];
 let modState = {};
@@ -50,6 +52,21 @@ let pk3ModsError = null;
 let serverList = undefined; // undefined = not loaded, array once loaded, or { error }
 const serverStatusCache = {}; // address -> ServerStatus, undefined while loading, or { error } (used for the Home favorite card)
 const serverJoinMessage = {}; // address -> status text shown under that server's card
+
+// Seeds everyone's very first launch with NA East already favorited, without
+// permanently overriding someone who later un-favorites it on purpose - the
+// seeded-marker means this only ever fires once per install, not every time
+// favoriteServer happens to be empty.
+function ensureDefaultFavoriteServer() {
+  try {
+    if (localStorage.getItem(FAVORITE_SERVER_SEEDED_KEY) === null) {
+      localStorage.setItem(FAVORITE_SERVER_KEY, DEFAULT_FAVORITE_SERVER);
+      localStorage.setItem(FAVORITE_SERVER_SEEDED_KEY, "1");
+    }
+  } catch {
+    // Private-browsing-style storage block - just skip the default.
+  }
+}
 
 function getFavoriteServer() {
   try {
@@ -1175,6 +1192,7 @@ async function installPendingUpdate() {
 }
 
 async function init() {
+  ensureDefaultFavoriteServer();
   checkGameFolder();
   session = await loadSession();
   renderSidebar();
