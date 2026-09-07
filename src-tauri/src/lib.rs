@@ -351,14 +351,24 @@ fn uninstall_mod(mod_id: &str, game_root: &std::path::Path) -> Result<String, St
 
     let mut removed = 0;
     let mut failed = 0;
+    let mut skipped = 0;
     for rel_path in &record.paths {
         let path = game_root.join(rel_path);
-        let result = if path.is_dir() {
-            std::fs::remove_dir_all(&path)
-        } else {
-            std::fs::remove_file(&path)
-        };
-        match result {
+        // install_mod tracks individual files, never a directory as one
+        // opaque unit - so a tracked path that turns out to be a directory
+        // here can only be leftover data from before that was true (or some
+        // other surprise). Never blanket-delete it: a mod's own folder can
+        // end up holding things we didn't ship at all once it's actually
+        // used (Tommyternal's "eternaljk2" folder picks up a live user cfg
+        // and chat logs the moment the game runs) - recursively wiping it
+        // on uninstall was exactly the bug behind settings resetting after
+        // an uninstall/reinstall. Skipping it is a little untidy but never
+        // destroys anything that wasn't ours.
+        if path.is_dir() && !path.is_symlink() {
+            skipped += 1;
+            continue;
+        }
+        match std::fs::remove_file(&path) {
             Ok(()) => removed += 1,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {} // already gone
             Err(_) => failed += 1,
@@ -366,13 +376,15 @@ fn uninstall_mod(mod_id: &str, game_root: &std::path::Path) -> Result<String, St
     }
 
     save_installed_mods(game_root, &installed_mods)?;
+    let mut message = format!("Uninstalled ({removed} item(s) removed)");
     if failed > 0 {
-        Ok(format!(
-            "Removed {removed} item(s); {failed} couldn't be deleted (may need manual cleanup)."
-        ))
-    } else {
-        Ok(format!("Uninstalled ({removed} item(s) removed)."))
+        message.push_str(&format!("; {failed} couldn't be deleted (may need manual cleanup)"));
     }
+    if skipped > 0 {
+        message.push_str(&format!("; left {skipped} folder(s) in place to avoid deleting anything not from this install"));
+    }
+    message.push('.');
+    Ok(message)
 }
 
 fn check_ownership(
@@ -492,6 +504,23 @@ fn copy_dir_recursive(src: &std::path::Path, dest: &std::path::Path) -> Result<(
     Ok(())
 }
 
+// Every file actually sitting under dir right now (not the directory names
+// themselves) - used so a whole-folder install can still be uninstalled
+// file-by-file rather than as one deletable unit.
+fn list_files_recursive(dir: &std::path::Path) -> Result<Vec<std::path::PathBuf>, String> {
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        if entry.file_type().map_err(|e| e.to_string())?.is_dir() {
+            files.extend(list_files_recursive(&path)?);
+        } else {
+            files.push(path);
+        }
+    }
+    Ok(files)
+}
+
 fn find_jk2_base_and_root(
     app: &tauri::AppHandle,
 ) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
@@ -579,22 +608,24 @@ fn install_mod(
 
     let mut installed_paths = Vec::new();
     for action in &actions {
-        let dest = match action {
+        match action {
             InstallAction::MergeBaseFile { src, dest } | InstallAction::CopyRootFile { src, dest } => {
                 std::fs::copy(src, dest).map_err(|e| e.to_string())?;
-                dest
+                installed_paths.push(dest.strip_prefix(game_root).unwrap().to_string_lossy().to_string());
             }
             InstallAction::CopyModDir { src, dest } => {
                 copy_dir_recursive(src, dest)?;
-                dest
+                // Track every individual file actually placed, not the
+                // directory as one opaque unit - a mod's own folder can
+                // pick up things we never shipped once it's actually used
+                // (a live user config, chat logs, ...), and uninstall must
+                // be able to remove exactly what came from this install
+                // without also deleting whatever else ended up alongside it.
+                for file in list_files_recursive(dest)? {
+                    installed_paths.push(file.strip_prefix(game_root).unwrap().to_string_lossy().to_string());
+                }
             }
         };
-        installed_paths.push(
-            dest.strip_prefix(game_root)
-                .unwrap()
-                .to_string_lossy()
-                .to_string(),
-        );
     }
 
     installed_mods.insert(
@@ -1291,3 +1322,4 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+
