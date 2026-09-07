@@ -33,6 +33,28 @@ const MOD_HANDLERS = {
 // Only clients that actually speak the multiplayer protocol can join -
 // OpenJO is single-player only.
 const JOINABLE_CLIENTS = ["TommyternalJK2MV", "JK2MV"];
+
+// The Servers page used to discover this list live from the community
+// master server, but that discovery query proved unreliable (consistently
+// returned zero addresses when run from a compiled binary, even retried
+// with fresh sockets, while a direct query to a known address always
+// works). A maintained list traded auto-discovery for the same reliability
+// favorites already had.
+const KNOWN_SERVERS = [
+  "185.163.117.39:28075", // Ownage City
+  "176.103.220.40:28070", // freedom defrag
+  "176.103.220.40:28071", // slowburn defrag
+  "185.163.117.39:28070", // O.C Funmaps
+  "185.163.117.39:28071", // O.C Manhunt
+  "159.195.145.214:28077", // [DARK] Homebase
+  "74.91.115.117:28072", // American FFA
+  "74.91.115.117:28070", // American NWH
+  "192.223.24.74:28070", // NA East
+  "54.238.175.102:28070", // NWH Tokyo
+  "176.103.220.40:28072", // freedom duels
+  "199.19.72.85:28070", // Dozer NY NWH
+  "108.248.225.180:28070", // Saberology
+];
 const FAVORITE_SERVERS_KEY = "jk2launcher.favoriteServers";
 const FAVORITE_SERVERS_SEEDED_KEY = "jk2launcher.favoriteServersSeeded";
 const LEGACY_FAVORITE_SERVER_KEY = "jk2launcher.favoriteServer"; // pre-multi-favorite, single address
@@ -54,8 +76,7 @@ const statsCache = {}; // player name -> stats data, null (not found), or { erro
 let pk3Mods = null; // list from list_pk3_mods, or null while loading
 let pk3ModsError = null;
 
-let serverList = undefined; // undefined = not loaded, array once loaded, or { error }
-const serverStatusCache = {}; // address -> ServerStatus, undefined while loading, or { error } (used for the Home favorite card)
+const serverStatusCache = {}; // address -> ServerStatus, undefined while loading, or { error }
 const serverJoinMessage = {}; // address -> status text shown under that server's card
 
 // Seeds everyone's very first launch with two favorites already set, without
@@ -520,9 +541,9 @@ function stripQuakeColors(s) {
 
 const serverStatusLoading = new Set(); // addresses with a query already in flight
 
-// Only used for the Home favorite-server bar (the Servers page gets its
-// data from list_servers instead) - a single address, queried once and
-// cached until the app restarts.
+// Shared by the Home favorite-server bar and the Servers page - a single
+// address, queried directly and cached until the app restarts or Refresh
+// clears it.
 async function loadServerStatus(address) {
   if (serverStatusLoading.has(address)) return;
   serverStatusLoading.add(address);
@@ -534,10 +555,9 @@ async function loadServerStatus(address) {
   } finally {
     serverStatusLoading.delete(address);
   }
-  // This is only ever rendered on Home (the favorite-server bar) - re-render
-  // it there regardless of what triggered the load, not just when it
-  // happens to still be the active view by coincidence.
-  if (selected === "__home__") renderMain();
+  // Re-render wherever this result is actually shown, regardless of which
+  // view triggered the load in the first place.
+  if (selected === "__home__" || selected === "__servers__") renderMain();
 }
 
 async function joinServer(clientName, address) {
@@ -552,16 +572,6 @@ async function joinServer(clientName, address) {
     serverJoinMessage[address] = `Error: ${err}`;
   }
   renderMain();
-}
-
-async function loadServerList() {
-  try {
-    const { invoke } = window.__TAURI__.core;
-    serverList = await invoke("list_servers");
-  } catch (err) {
-    serverList = { error: String(err) };
-  }
-  if (selected === "__servers__") renderMain();
 }
 
 const expandedServers = new Set(); // addresses currently expanded in the Servers list
@@ -615,14 +625,22 @@ function serverRowHtml(data) {
 }
 
 function renderServersView(mainEl) {
+  const resolved = [];
+  let pending = 0;
+  for (const address of KNOWN_SERVERS) {
+    const data = serverStatusCache[address];
+    if (data === undefined) {
+      pending++;
+      loadServerStatus(address);
+    } else if (!data.error) {
+      resolved.push(data);
+    }
+  }
+  resolved.sort((a, b) => b.players.length - a.players.length);
+
   let listHtml;
-  if (serverList === undefined) {
-    loadServerList();
-    listHtml = `<p class="detail-status">Querying the community master server for live JK2 servers...</p>`;
-  } else if (serverList.error) {
-    listHtml = `<p class="detail-status">Couldn't reach the master server: ${serverList.error}</p>`;
-  } else if (serverList.length === 0) {
-    listHtml = `<p class="detail-status">No servers are online right now.</p>`;
+  if (resolved.length === 0) {
+    listHtml = `<p class="detail-status">${pending > 0 ? "Querying known servers..." : "None of the known servers are online right now."}</p>`;
   } else {
     listHtml = `
       <div class="server-list-header">
@@ -633,14 +651,15 @@ function renderServersView(mainEl) {
         <span class="server-row-ping">Ping</span>
         <span class="server-row-caret"></span>
       </div>
-      <div class="server-list">${serverList.map(serverRowHtml).join("")}</div>`;
+      <div class="server-list">${resolved.map(serverRowHtml).join("")}</div>
+      ${pending > 0 ? `<p class="detail-status">Querying ${pending} more...</p>` : ""}`;
   }
   mainEl.innerHTML = `
     <div class="detail-header">
       <h2>Servers</h2>
       <button class="server-refresh-btn" id="server-refresh-btn">Refresh</button>
     </div>
-    <p class="detail-description">Live JK2 1.02 servers, queried directly from the community master server - star a favorite for a one-click join from Home, click a row for details.</p>
+    <p class="detail-description">Known JK2 1.02 community servers, queried directly - star a favorite for a one-click join from Home, click a row for details.</p>
     ${listHtml}
   `;
 }
@@ -1335,7 +1354,7 @@ document.getElementById("main").addEventListener("click", (e) => {
     return;
   }
   if (e.target.closest("#server-refresh-btn")) {
-    serverList = undefined;
+    for (const address of KNOWN_SERVERS) delete serverStatusCache[address];
     renderMain();
     return;
   }

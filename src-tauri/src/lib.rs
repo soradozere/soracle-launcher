@@ -1074,9 +1074,9 @@ struct ServerStatus {
 }
 
 // The actual blocking work (UDP send/recv with a multi-second timeout) -
-// kept separate from the #[tauri::command] wrapper below so list_servers can
-// call it directly from its own already-spawned OS threads, without piling
-// another layer of async/spawn_blocking on top per-server.
+// kept separate from the #[tauri::command] wrapper below so it's not
+// piling an extra layer of async/spawn_blocking on top of what the
+// wrapper already provides.
 fn query_server_status_blocking(address: String) -> Result<ServerStatus, String> {
     use std::net::UdpSocket;
     use std::time::{Duration, Instant};
@@ -1151,130 +1151,12 @@ fn query_server_status_blocking(address: String) -> Result<ServerStatus, String>
 // Runs the actual query on Tauri's blocking thread pool rather than
 // whatever thread dispatches the command - a single query only blocks for
 // up to a few seconds, but there's no reason to risk it landing on
-// something IPC/UI-adjacent (see list_servers below for why this matters).
+// something IPC/UI-adjacent.
 #[tauri::command]
 async fn query_server_status(address: String) -> Result<ServerStatus, String> {
     tauri::async_runtime::spawn_blocking(move || query_server_status_blocking(address))
         .await
         .map_err(|e| e.to_string())?
-}
-
-// JK2's community master server - the same one NWH and Tommyternal both
-// have baked in (confirmed via `strings` on the real binaries: both
-// reference "master.jk2mv.org" alongside the long-dead original
-// "masterjk2.ravensoft.com"). Protocol 15 is JK2 1.02's protocol version,
-// confirmed against a real server's own getstatus response.
-const JK2_MASTER_HOST: &str = "master.jk2mv.org";
-const JK2_MASTER_PORT: u16 = 28060;
-const JK2_PROTOCOL: u16 = 15;
-
-fn query_master_servers() -> Result<Vec<String>, String> {
-    use std::net::UdpSocket;
-    use std::time::Duration;
-
-    let socket = UdpSocket::bind("0.0.0.0:0").map_err(|e| e.to_string())?;
-    socket
-        .set_read_timeout(Some(Duration::from_millis(1500)))
-        .map_err(|e| e.to_string())?;
-
-    let mut packet: Vec<u8> = vec![0xFF, 0xFF, 0xFF, 0xFF];
-    packet.extend_from_slice(format!("getservers {} empty full", JK2_PROTOCOL).as_bytes());
-
-    let master_addr = format!("{}:{}", JK2_MASTER_HOST, JK2_MASTER_PORT);
-    socket
-        .send_to(&packet, &master_addr)
-        .map_err(|e| format!("Couldn't reach master server: {}", e))?;
-
-    let mut addresses = Vec::new();
-    let mut buf = [0u8; 16384];
-    // A big list can span more than one reply packet - keep reading until
-    // the master goes quiet (recv times out).
-    loop {
-        let (len, _) = match socket.recv_from(&mut buf) {
-            Ok(r) => r,
-            Err(_) => break,
-        };
-        let data = &buf[..len];
-        let marker = b"getserversResponse";
-        let Some(pos) = data.windows(marker.len()).position(|w| w == marker) else {
-            continue;
-        };
-        let body = &data[pos + marker.len()..];
-        let mut i = 0;
-        while i < body.len() {
-            if body[i] != b'\\' {
-                i += 1;
-                continue;
-            }
-            let rest = &body[i + 1..];
-            if rest.starts_with(b"EOT") {
-                break;
-            }
-            if rest.len() < 6 {
-                break;
-            }
-            let chunk = &rest[..6];
-            let port = ((chunk[4] as u16) << 8) | chunk[5] as u16;
-            addresses.push(format!("{}.{}.{}.{}:{}", chunk[0], chunk[1], chunk[2], chunk[3], port));
-            i += 7;
-        }
-    }
-    Ok(addresses)
-}
-
-// This fans out to ~20-30 OS threads, each blocking on its own UDP socket
-// for up to a few seconds - genuinely heavy blocking work, not something to
-// risk running on whatever thread Tauri happens to dispatch commands on.
-// spawn_blocking guarantees it runs on the blocking pool instead (this was
-// very likely the cause of the launcher appearing to hang/crash the first
-// time someone opened the Servers page).
-#[tauri::command]
-async fn list_servers() -> Result<Vec<ServerStatus>, String> {
-    tauri::async_runtime::spawn_blocking(|| -> Result<Vec<ServerStatus>, String> {
-        let addresses = query_master_servers()?;
-        if addresses.is_empty() {
-            // Confirmed on a real machine: the exact same UDP packet, sent
-            // moment-for-moment, gets a reply for a plain python3 process
-            // and never does for this compiled binary - some kind of
-            // network-level interference between this process and the
-            // master, not the master actually having nothing to say. "No
-            // servers online" would be a misleading way to describe that,
-            // so surface it as the connectivity problem it actually is
-            // rather than guessing at which specific tool is responsible.
-            return Err(
-                "Got no response from the community master server - this looks like a network \
-                 or connectivity issue reaching it, not an empty server list. Worth checking \
-                 anything that filters outbound traffic (VPN, firewall, security software)."
-                    .to_string(),
-            );
-        }
-        // Firing 20-30 UDP packets at 20-30 different hosts all in the same
-        // instant looks like a port scan to that same kind of software -
-        // staggering the sends a few milliseconds apart costs almost
-        // nothing here (each query still waits up to a few seconds for its
-        // own reply) but reads as normal traffic instead of a burst.
-        let handles: Vec<_> = addresses
-            .into_iter()
-            .enumerate()
-            .map(|(i, address)| {
-                std::thread::spawn(move || {
-                    std::thread::sleep(std::time::Duration::from_millis(25 * i as u64));
-                    query_server_status_blocking(address)
-                })
-            })
-            .collect();
-
-        let mut servers: Vec<ServerStatus> = handles
-            .into_iter()
-            .filter_map(|h| h.join().ok())
-            .filter_map(|r| r.ok())
-            .collect();
-        // Busiest servers first - the ones people actually want to see.
-        servers.sort_by(|a, b| b.players.len().cmp(&a.players.len()));
-        Ok(servers)
-    })
-    .await
-    .map_err(|e| e.to_string())?
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1316,8 +1198,7 @@ pub fn run() {
             add_pk3_mod_from_download,
             set_pk3_mod_targets,
             remove_pk3_mod,
-            query_server_status,
-            list_servers
+            query_server_status
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
