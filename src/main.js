@@ -455,26 +455,30 @@ function favoriteServerRowHtml(address) {
       </div>`;
   }
   const installedJoinable = JOINABLE_CLIENTS.filter((name) => modState[name]?.installed);
+  const nameHtml = `<span class="favorite-row-name">${stripQuakeColors(data.hostname)}</span>`;
   let playHtml;
+  let selectHtml = "";
   if (installedJoinable.length === 0) {
     playHtml = `<span class="favorite-play-btn favorite-play-btn--disabled">Install a client</span>`;
   } else if (installedJoinable.length === 1) {
     playHtml = `<button class="favorite-play-btn server-join-btn" data-address="${address}" data-client="${installedJoinable[0]}">Play</button>`;
   } else {
     // More than one option installed - let them pick, same control as the
-    // Servers page, instead of silently guessing which one they meant.
-    playHtml = `
-      <div class="server-join">
-        <button class="favorite-play-btn server-join-btn" data-address="${address}">Play</button>
-        <select class="server-client-select">
-          ${installedJoinable.map((name) => `<option value="${name}">${mods.find((m) => m.name === name)?.displayName ?? name}</option>`).join("")}
-        </select>
-      </div>`;
+    // Servers page, instead of silently guessing which one they meant. The
+    // select sits after the server name (not next to the button) so the
+    // server you're looking at reads first; .closest(".favorite-row") in
+    // the click handler still finds it regardless of where it sits in the row.
+    playHtml = `<button class="favorite-play-btn server-join-btn" data-address="${address}">Play</button>`;
+    selectHtml = `
+      <select class="server-client-select">
+        ${installedJoinable.map((name) => `<option value="${name}">${mods.find((m) => m.name === name)?.displayName ?? name}</option>`).join("")}
+      </select>`;
   }
   return `
     <div class="favorite-row">
       ${playHtml}
-      <span class="favorite-row-name">${stripQuakeColors(data.hostname)}</span>
+      ${nameHtml}
+      ${selectHtml}
       <span class="favorite-row-meta">${data.map} &middot; ${data.players.length}/${data.max_clients} players</span>
       <button class="server-favorite-btn active" data-address="${address}" title="Remove favorite">★</button>
       ${serverJoinMessage[address] ? `<p class="detail-status">${serverJoinMessage[address]}</p>` : ""}
@@ -1340,10 +1344,11 @@ document.getElementById("main").addEventListener("click", (e) => {
   }
   const joinBtn = e.target.closest(".server-join-btn");
   if (joinBtn) {
-    // The Home favorite bar has no dropdown - it picks a client directly
-    // (data-client) for a true one-click join; the Servers page offers a
-    // choice via a sibling <select> when more than one client is installed.
-    const clientName = joinBtn.dataset.client ?? joinBtn.closest(".server-join").querySelector(".server-client-select").value;
+    // One-click join (data-client) when only one client is installed;
+    // otherwise pick the value from the row's <select>. The select lives in
+    // a ".server-join" wrapper on the Servers page, and directly inside
+    // ".favorite-row" on the Home favorite bar - match either ancestor.
+    const clientName = joinBtn.dataset.client ?? joinBtn.closest(".server-join, .favorite-row").querySelector(".server-client-select").value;
     joinServer(clientName, joinBtn.dataset.address);
     return;
   }
