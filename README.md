@@ -13,6 +13,24 @@ currently build and run the launcher shell itself, but the client
 install/launch pipelines are still macOS-only — that's the next phase of
 work.
 
+## Download
+
+Grab the latest build for your OS from the
+[Releases page](https://github.com/soradozere/soracle-launcher/releases) —
+`.dmg` for macOS, `.exe`/`.msi` for Windows, `.AppImage`/`.deb`/`.rpm` for
+Linux.
+
+**macOS note:** the app is ad-hoc signed, not notarized by Apple (that
+requires a paid Apple Developer account), so the first launch will hit
+Gatekeeper. Depending on macOS version you'll either see *"JK2Launcher can't
+be opened because Apple cannot check it for malicious software"* or it'll be
+missing from the normal double-click flow entirely. Either way: right-click
+(or Control-click) the app in Finder and choose **Open**, then confirm in
+the dialog that appears — this only has to be done once. If macOS instead
+says the app *"is damaged and can't be opened,"* that's not this — please
+[open an issue](https://github.com/soradozere/soracle-launcher/issues), that
+means something actually went wrong with that build.
+
 ## Prerequisites
 
 - Node + [pnpm](https://pnpm.io/)
