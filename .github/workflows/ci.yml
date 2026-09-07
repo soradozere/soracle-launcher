@@ -43,9 +43,18 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install
 
+      # bundle.createUpdaterArtifacts is on in tauri.conf.json (needed for real
+      # releases to produce a signed latest.json), which means *every* build -
+      # including this plain CI compile-check - now tries to sign an updater
+      # artifact and fails without a key. Giving CI the same secret
+      # release.yml uses keeps this build identical to a real release build
+      # (and would have caught the missing createUpdaterArtifacts config
+      # itself, before it ever needed a real tagged release to surface).
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           uploadWorkflowArtifacts: true
