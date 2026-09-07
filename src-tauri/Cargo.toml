@@ -3,6 +3,7 @@ name = "soracle-launcher"
 version = "0.1.0"
 description = "Soracle community launcher for JK2 client mods"
 authors = ["Soracle"]
+license = "MIT"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
