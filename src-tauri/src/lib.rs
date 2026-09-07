@@ -67,6 +67,16 @@ fn extract_tommyternal(app: tauri::AppHandle) -> Result<String, String> {
     let zip_path = app_data.join("tommyternal_macos_arm64.zip");
     let dest = app_data.join("extracted").join("tommyternal");
 
+    // Tommyternal's "latest-postxp" tag is a moving target - its archive's
+    // single top-level folder is named after the build's git commit, so a
+    // second extract after Tom ships a new build lands in a differently
+    // named folder alongside whatever was extracted before, instead of
+    // replacing it. find_single_subdir (used to locate this payload for
+    // install) then finds more than one and refuses to guess. Clearing the
+    // destination first guarantees exactly one folder no matter how many
+    // times this has been extracted before.
+    let _ = std::fs::remove_dir_all(&dest);
+
     let zip_file = std::fs::File::open(&zip_path).map_err(|e| e.to_string())?;
     let mut zip_archive = zip::ZipArchive::new(zip_file).map_err(|e| e.to_string())?;
     let inner_targz = zip_archive.by_index(0).map_err(|e| e.to_string())?;
@@ -1191,9 +1201,36 @@ fn query_master_servers() -> Result<Vec<String>, String> {
 async fn list_servers() -> Result<Vec<ServerStatus>, String> {
     tauri::async_runtime::spawn_blocking(|| -> Result<Vec<ServerStatus>, String> {
         let addresses = query_master_servers()?;
+        if addresses.is_empty() {
+            // Confirmed on a real machine: the exact same UDP packet, sent
+            // moment-for-moment, gets a reply for a plain python3 process
+            // and never does for this compiled binary - some kind of
+            // network-level interference between this process and the
+            // master, not the master actually having nothing to say. "No
+            // servers online" would be a misleading way to describe that,
+            // so surface it as the connectivity problem it actually is
+            // rather than guessing at which specific tool is responsible.
+            return Err(
+                "Got no response from the community master server - this looks like a network \
+                 or connectivity issue reaching it, not an empty server list. Worth checking \
+                 anything that filters outbound traffic (VPN, firewall, security software)."
+                    .to_string(),
+            );
+        }
+        // Firing 20-30 UDP packets at 20-30 different hosts all in the same
+        // instant looks like a port scan to that same kind of software -
+        // staggering the sends a few milliseconds apart costs almost
+        // nothing here (each query still waits up to a few seconds for its
+        // own reply) but reads as normal traffic instead of a burst.
         let handles: Vec<_> = addresses
             .into_iter()
-            .map(|address| std::thread::spawn(move || query_server_status_blocking(address)))
+            .enumerate()
+            .map(|(i, address)| {
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(25 * i as u64));
+                    query_server_status_blocking(address)
+                })
+            })
             .collect();
 
         let mut servers: Vec<ServerStatus> = handles
