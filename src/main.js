@@ -161,7 +161,12 @@ async function loadSession() {
   try {
     if (!(await exists(SESSION_FILE, { baseDir: BaseDirectory.AppData }))) return null;
     return JSON.parse(await readTextFile(SESSION_FILE, { baseDir: BaseDirectory.AppData }));
-  } catch {
+  } catch (err) {
+    // A bare silent catch here is exactly how the missing
+    // fs:allow-appdata-read-recursive capability (session file writes fine,
+    // reads were denied) went unnoticed - login "worked" but silently
+    // never survived a restart, with nothing to explain why.
+    console.error("Failed to load session:", err);
     return null;
   }
 }

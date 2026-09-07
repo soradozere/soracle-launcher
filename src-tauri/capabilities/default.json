@@ -21,6 +21,7 @@
         { "url": "https://api.github.com/*" }
       ]
     },
-    "fs:allow-appdata-write-recursive"
+    "fs:allow-appdata-write-recursive",
+    "fs:allow-appdata-read-recursive"
   ]
 }
