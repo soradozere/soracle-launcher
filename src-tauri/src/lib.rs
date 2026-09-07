@@ -340,6 +340,21 @@ fn installed_status(mod_id: &str, game_root: &std::path::Path) -> InstalledStatu
     }
 }
 
+// Climbs from `dir` up toward (not including) `stop_at`, removing each
+// directory as long as it's completely empty, stopping at the first one
+// that isn't (or at stop_at itself, which is never removed).
+fn remove_empty_ancestors(dir: &std::path::Path, stop_at: &std::path::Path) {
+    let mut dir = dir.to_path_buf();
+    while dir != stop_at {
+        let is_empty = std::fs::read_dir(&dir).map(|mut e| e.next().is_none()).unwrap_or(false);
+        if !is_empty || std::fs::remove_dir(&dir).is_err() {
+            break;
+        }
+        let Some(parent) = dir.parent() else { break };
+        dir = parent.to_path_buf();
+    }
+}
+
 // Removes exactly what install_mod recorded as this mod's own footprint -
 // not a full "restore game_root to how it looked before," since shared
 // base/ content from other installed clients is left untouched either way.
@@ -369,7 +384,19 @@ fn uninstall_mod(mod_id: &str, game_root: &std::path::Path) -> Result<String, St
             continue;
         }
         match std::fs::remove_file(&path) {
-            Ok(()) => removed += 1,
+            Ok(()) => {
+                removed += 1;
+                // Once every file inside e.g. jk2mvmp.app/Contents/... is
+                // gone, the directory tree left behind is just an empty
+                // shell - clean it up so a later install doesn't run into
+                // check_ownership refusing to touch a directory it thinks
+                // is unrelated leftover content. Only ever removes a
+                // directory that's actually empty, so anything still
+                // holding real content (tracked or not) is left alone.
+                if let Some(parent) = path.parent() {
+                    remove_empty_ancestors(parent, game_root);
+                }
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {} // already gone
             Err(_) => failed += 1,
         }
@@ -398,7 +425,14 @@ fn check_ownership(
             .map_err(|e| e.to_string())?
             .to_string_lossy()
             .to_string();
-        if !already_ours.contains(&rel) {
+        // A tracked entry can be this exact path (a single copied file) or
+        // something nested under it - a whole app bundle like JK2MV's
+        // jk2mvmp.app is tracked file-by-file since the fix that stopped
+        // uninstall from wiping data a client writes into its own folder
+        // (Tommyternal's cfg/chat logs), so the bundle's own top-level
+        // directory name never appears verbatim in already_ours anymore.
+        let owns_it = already_ours.contains(&rel) || already_ours.iter().any(|p| p.starts_with(&format!("{rel}/")));
+        if !owns_it {
             return Err(format!(
                 "{} already exists and wasn't installed by this launcher - refusing to overwrite",
                 dest.display()
@@ -433,10 +467,20 @@ fn plan_install(
             }
         } else {
             let dest = game_root.join(&name);
-            check_ownership(&dest, game_root, already_ours)?;
             if path.is_dir() {
+                // No top-level ownership check here - a mod's own folder
+                // can (by design, and confirmed for real: Tommyternal's
+                // "eternaljk2") end up holding files we never shipped once
+                // the game actually runs in it, and after a full uninstall
+                // there's no tracking record left to compare against at
+                // all even though reinstalling into that same surviving
+                // folder is completely normal. copy_dir_recursive only
+                // ever adds/overwrites the specific files in our own
+                // payload, so it can't clobber anything we don't already
+                // know about regardless.
                 actions.push(InstallAction::CopyModDir { src: path, dest });
             } else {
+                check_ownership(&dest, game_root, already_ours)?;
                 actions.push(InstallAction::CopyRootFile { src: path, dest });
             }
         }
