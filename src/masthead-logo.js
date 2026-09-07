@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 
 // The rotating JK2 emblem with a lightsaber blade running behind it, ported
 // from Soracle's masthead-logo-3d.tsx (React Three Fiber) to plain Three.js,
@@ -21,7 +22,6 @@ const CORE_WIDTH = 0.45;
 const HALO_OPACITY = 0.22;
 const GLOW_OPACITY = 0.6;
 
-const EMBLEM_GAIN = 1.45;
 const EMBLEM_SCALE = 0.88;
 const FOV = 32;
 
@@ -43,6 +43,22 @@ async function init() {
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(FOV, 1, 0.1, 100);
 
+  // Real reflections instead of the old flat matcap: a procedural studio
+  // environment (soft box lighting from a few directions) gives the emblem
+  // an actual chrome-like reflection that shifts correctly as it spins,
+  // rather than a static screen-space fake.
+  const pmremGenerator = new THREE.PMREMGenerator(renderer);
+  const envRenderTarget = pmremGenerator.fromScene(new RoomEnvironment(), 0.04);
+  scene.environment = envRenderTarget.texture;
+  pmremGenerator.dispose();
+
+  // A moving specular highlight needs an actual light, not just IBL - a dim
+  // point riding near the camera keeps a bright hotspot sweeping across the
+  // metal as the emblem rotates.
+  const keyLight = new THREE.PointLight(0xffffff, 35, 0, 2);
+  keyLight.position.set(2, 2, 4);
+  scene.add(keyLight);
+
   // Measure the canvas itself, not the (narrower) masthead div - the canvas
   // is deliberately sized wider via CSS so the emblem can bleed out past the
   // masthead strip instead of being cropped at its border.
@@ -58,11 +74,10 @@ async function init() {
   resize();
 
   const textureLoader = new THREE.TextureLoader();
-  const [coreMap, glowMap, diffuseMap, envMap] = await Promise.all([
+  const [coreMap, glowMap, diffuseMap] = await Promise.all([
     textureLoader.loadAsync(`${ASSET_BASE}/saber-core.jpg`),
     textureLoader.loadAsync(`${ASSET_BASE}/saber-glow.jpg`),
     textureLoader.loadAsync(`${ASSET_BASE}/logo-diffuse.jpg`),
-    textureLoader.loadAsync(`${ASSET_BASE}/logo-env.jpg`),
   ]);
 
   // Half-blade profiles: mirror them about the centre so both sides fall off
@@ -74,10 +89,8 @@ async function init() {
     map.offset.set(-1, 0);
     map.needsUpdate = true;
   }
-  for (const map of [diffuseMap, envMap]) {
-    map.colorSpace = THREE.SRGBColorSpace;
-    map.needsUpdate = true;
-  }
+  diffuseMap.colorSpace = THREE.SRGBColorSpace;
+  diffuseMap.needsUpdate = true;
 
   // --- saber beam: outside the rotating group so it never orbits ---
   const blade = new THREE.Group();
@@ -131,15 +144,17 @@ async function init() {
 
   scene.add(blade);
 
-  // --- spinning emblem: reproduces the game's two-stage shader (flat unlit
-  // diffuse + an additive matcap overlay standing in for tcGen environment) ---
-  const baseMaterial = new THREE.MeshBasicMaterial({ map: diffuseMap, toneMapped: false });
-  baseMaterial.color.setScalar(EMBLEM_GAIN);
-  const envMaterial = new THREE.MeshMatcapMaterial({
-    matcap: envMap,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false,
-    transparent: true,
+  // --- spinning emblem: real metal now instead of a flat unlit diffuse +
+  // matcap standing in for reflections - metalness/roughness respond to the
+  // room environment above (and keyLight) for reflections that actually
+  // move correctly as the emblem rotates, not a static screen-space fake ---
+  const baseMaterial = new THREE.MeshPhysicalMaterial({
+    map: diffuseMap,
+    metalness: 0.9,
+    roughness: 0.18,
+    envMapIntensity: 1.7,
+    clearcoat: 0.5,
+    clearcoatRoughness: 0.15,
   });
 
   const gltf = await new GLTFLoader().loadAsync(`${ASSET_BASE}/jk2logo.glb`);
@@ -149,7 +164,6 @@ async function init() {
   });
   for (const mesh of meshes) {
     mesh.material = baseMaterial;
-    mesh.add(new THREE.Mesh(mesh.geometry, envMaterial));
   }
 
   const group = new THREE.Group();

@@ -33,9 +33,14 @@ const MOD_HANDLERS = {
 // Only clients that actually speak the multiplayer protocol can join -
 // OpenJO is single-player only.
 const JOINABLE_CLIENTS = ["TommyternalJK2MV", "JK2MV"];
-const FAVORITE_SERVER_KEY = "jk2launcher.favoriteServer";
-const FAVORITE_SERVER_SEEDED_KEY = "jk2launcher.favoriteServerSeeded";
-const DEFAULT_FAVORITE_SERVER = "192.223.24.74:28070"; // NA East
+const FAVORITE_SERVERS_KEY = "jk2launcher.favoriteServers";
+const FAVORITE_SERVERS_SEEDED_KEY = "jk2launcher.favoriteServersSeeded";
+const LEGACY_FAVORITE_SERVER_KEY = "jk2launcher.favoriteServer"; // pre-multi-favorite, single address
+const MAX_FAVORITE_SERVERS = 3;
+const DEFAULT_FAVORITE_SERVERS = [
+  "192.223.24.74:28070", // NA East
+  "176.103.220.40:28070", // freedomdefrag
+];
 
 let mods = [];
 let modState = {};
@@ -53,36 +58,52 @@ let serverList = undefined; // undefined = not loaded, array once loaded, or { e
 const serverStatusCache = {}; // address -> ServerStatus, undefined while loading, or { error } (used for the Home favorite card)
 const serverJoinMessage = {}; // address -> status text shown under that server's card
 
-// Seeds everyone's very first launch with NA East already favorited, without
-// permanently overriding someone who later un-favorites it on purpose - the
-// seeded-marker means this only ever fires once per install, not every time
-// favoriteServer happens to be empty.
-function ensureDefaultFavoriteServer() {
+// Seeds everyone's very first launch with two favorites already set, without
+// permanently overriding someone who later changes their favorites on
+// purpose - the seeded-marker means this only ever fires once per install.
+// Also migrates the old single-favorite key from before multi-favorite
+// support, so an existing pick isn't silently dropped.
+function ensureDefaultFavoriteServers() {
   try {
-    if (localStorage.getItem(FAVORITE_SERVER_SEEDED_KEY) === null) {
-      localStorage.setItem(FAVORITE_SERVER_KEY, DEFAULT_FAVORITE_SERVER);
-      localStorage.setItem(FAVORITE_SERVER_SEEDED_KEY, "1");
-    }
+    if (localStorage.getItem(FAVORITE_SERVERS_SEEDED_KEY) !== null) return;
+    const legacy = localStorage.getItem(LEGACY_FAVORITE_SERVER_KEY);
+    const seeded = legacy
+      ? [legacy, ...DEFAULT_FAVORITE_SERVERS.filter((a) => a !== legacy)].slice(0, MAX_FAVORITE_SERVERS)
+      : DEFAULT_FAVORITE_SERVERS;
+    localStorage.setItem(FAVORITE_SERVERS_KEY, JSON.stringify(seeded));
+    localStorage.setItem(FAVORITE_SERVERS_SEEDED_KEY, "1");
   } catch {
     // Private-browsing-style storage block - just skip the default.
   }
 }
 
-function getFavoriteServer() {
+function getFavoriteServers() {
   try {
-    return localStorage.getItem(FAVORITE_SERVER_KEY);
+    const parsed = JSON.parse(localStorage.getItem(FAVORITE_SERVERS_KEY) ?? "[]");
+    return Array.isArray(parsed) ? parsed : [];
   } catch {
-    return null;
+    return [];
   }
 }
 
-function setFavoriteServer(address) {
+function isFavoriteServer(address) {
+  return getFavoriteServers().includes(address);
+}
+
+// Returns false (and changes nothing) if this would add a new favorite past
+// the cap - callers that let a user reach this in the first place should
+// disable the control instead of relying solely on this.
+function toggleFavoriteServer(address) {
+  const current = getFavoriteServers();
+  const already = current.includes(address);
+  if (!already && current.length >= MAX_FAVORITE_SERVERS) return false;
+  const next = already ? current.filter((a) => a !== address) : [...current, address];
   try {
-    if (address) localStorage.setItem(FAVORITE_SERVER_KEY, address);
-    else localStorage.removeItem(FAVORITE_SERVER_KEY);
+    localStorage.setItem(FAVORITE_SERVERS_KEY, JSON.stringify(next));
   } catch {
     // Private-browsing-style storage block - favoriting just won't stick.
   }
+  return true;
 }
 
 const PK3_CLIENTS = [
@@ -389,44 +410,58 @@ function renderRecentHighlightsBlock() {
   `;
 }
 
-function favoriteServerBlockHtml() {
-  const address = getFavoriteServer();
-  if (!address) return "";
+function favoriteServerBarHtml(address) {
   const data = serverStatusCache[address];
   if (data === undefined) {
     loadServerStatus(address);
-    return `<div class="favorite-server-bar"><p class="detail-status">Checking your favorite server...</p></div>`;
+    return `<div class="favorite-server-bar"><p class="detail-status">Checking a favorite server...</p></div>`;
   }
   if (data.error) {
-    return `<div class="favorite-server-bar">
-      <span class="favorite-server-name">Favorite server offline</span>
-      <span class="server-meta">${address}</span>
-    </div>`;
+    return `
+      <div class="favorite-server-bar">
+        <div class="favorite-server-row">
+          <span class="favorite-play-btn favorite-play-btn--disabled">Offline</span>
+          <div class="favorite-server-info">
+            <span class="favorite-server-name">${address}</span>
+            <span class="server-meta">Unreachable right now</span>
+          </div>
+          <button class="server-favorite-btn active" data-address="${address}" title="Remove favorite">★</button>
+        </div>
+      </div>`;
   }
   const installedJoinable = JOINABLE_CLIENTS.filter((name) => modState[name]?.installed);
-  let joinControl;
+  let playHtml;
   if (installedJoinable.length === 0) {
-    joinControl = `<span class="server-meta">Install Tommyternal or JK2MV to join</span>`;
+    playHtml = `<span class="favorite-play-btn favorite-play-btn--disabled">Install a client</span>`;
   } else if (installedJoinable.length === 1) {
-    joinControl = `<button class="server-join-btn" data-address="${address}" data-client="${installedJoinable[0]}">Join</button>`;
+    playHtml = `<button class="favorite-play-btn server-join-btn" data-address="${address}" data-client="${installedJoinable[0]}">Play now</button>`;
   } else {
     // More than one option installed - let them pick, same control as the
     // Servers page, instead of silently guessing which one they meant.
-    joinControl = `
+    playHtml = `
       <div class="server-join">
+        <button class="favorite-play-btn server-join-btn" data-address="${address}">Play now</button>
         <select class="server-client-select">
           ${installedJoinable.map((name) => `<option value="${name}">${mods.find((m) => m.name === name)?.displayName ?? name}</option>`).join("")}
         </select>
-        <button class="server-join-btn" data-address="${address}">Join</button>
       </div>`;
   }
   return `
     <div class="favorite-server-bar">
-      <span class="favorite-server-star">★</span>
-      <span class="favorite-server-name">${stripQuakeColors(data.hostname)}</span>
-      <span class="server-meta">${data.map} &middot; ${data.players.length}/${data.max_clients} players</span>
-      ${joinControl}
+      <div class="favorite-server-row">
+        ${playHtml}
+        <div class="favorite-server-info">
+          <span class="favorite-server-name">${stripQuakeColors(data.hostname)}</span>
+          <span class="server-meta">${data.map} &middot; ${data.players.length}/${data.max_clients} players</span>
+        </div>
+        <button class="server-favorite-btn active" data-address="${address}" title="Remove favorite">★</button>
+      </div>
+      ${serverJoinMessage[address] ? `<p class="detail-status">${serverJoinMessage[address]}</p>` : ""}
     </div>`;
+}
+
+function favoriteServerBlocksHtml() {
+  return getFavoriteServers().map(favoriteServerBarHtml).join("");
 }
 
 function renderHomeView(mainEl) {
@@ -465,7 +500,7 @@ function renderHomeView(mainEl) {
   mainEl.innerHTML = `
     ${welcome}
     <p class="home-strap">Download, update and launch a client from the sidebar, and see what the playerbase has been up to below.</p>
-    ${favoriteServerBlockHtml()}
+    ${favoriteServerBlocksHtml()}
     ${loginPromptHtml}
     ${renderRecentHighlightsBlock()}
     <p class="home-feed-label">Recent Activity</p>
@@ -530,11 +565,17 @@ async function loadServerList() {
 const expandedServers = new Set(); // addresses currently expanded in the Servers list
 
 function serverRowHtml(data) {
-  const isFavorite = getFavoriteServer() === data.address;
+  const isFavorite = isFavoriteServer(data.address);
+  const atFavoriteLimit = !isFavorite && getFavoriteServers().length >= MAX_FAVORITE_SERVERS;
   const isExpanded = expandedServers.has(data.address);
+  const favoriteTitle = isFavorite
+    ? "Remove favorite"
+    : atFavoriteLimit
+      ? `Up to ${MAX_FAVORITE_SERVERS} favorites - remove one first`
+      : "Set as favorite";
   const summaryHtml = `
     <div class="server-row-summary" data-address="${data.address}">
-      <button class="server-favorite-btn ${isFavorite ? "active" : ""}" data-address="${data.address}" title="${isFavorite ? "Remove favorite" : "Set as favorite"}">${isFavorite ? "★" : "☆"}</button>
+      <button class="server-favorite-btn ${isFavorite ? "active" : ""}" data-address="${data.address}" title="${favoriteTitle}" ${atFavoriteLimit ? "disabled" : ""}>${isFavorite ? "★" : "☆"}</button>
       <span class="server-row-name">${stripQuakeColors(data.hostname)}</span>
       <span class="server-row-map">${data.map}</span>
       <span class="server-row-players">${data.players.length}/${data.max_clients}</span>
@@ -1192,7 +1233,7 @@ async function installPendingUpdate() {
 }
 
 async function init() {
-  ensureDefaultFavoriteServer();
+  ensureDefaultFavoriteServers();
   checkGameFolder();
   session = await loadSession();
   renderSidebar();
@@ -1286,8 +1327,8 @@ document.getElementById("main").addEventListener("click", (e) => {
     return;
   }
   const favBtn = e.target.closest(".server-favorite-btn");
-  if (favBtn) {
-    setFavoriteServer(getFavoriteServer() === favBtn.dataset.address ? null : favBtn.dataset.address);
+  if (favBtn && !favBtn.disabled) {
+    toggleFavoriteServer(favBtn.dataset.address);
     renderMain();
     return;
   }
