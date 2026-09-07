@@ -64,7 +64,16 @@ fn extract_nwh(app: tauri::AppHandle) -> Result<String, String> {
 #[tauri::command]
 fn extract_tommyternal(app: tauri::AppHandle) -> Result<String, String> {
     let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let zip_path = app_data.join("tommyternal_macos_arm64.zip");
+    // Every platform's release wraps its real payload in one outer .zip -
+    // only what's inside that wrapper differs (see below).
+    let archive_name = if cfg!(target_os = "windows") {
+        "tommyternal_windows_x64.zip"
+    } else if cfg!(target_os = "linux") {
+        "tommyternal_linux_x64.zip"
+    } else {
+        "tommyternal_macos_arm64.zip"
+    };
+    let zip_path = app_data.join(archive_name);
     let dest = app_data.join("extracted").join("tommyternal");
 
     // Tommyternal's "latest-postxp" tag is a moving target - its archive's
@@ -79,9 +88,25 @@ fn extract_tommyternal(app: tauri::AppHandle) -> Result<String, String> {
 
     let zip_file = std::fs::File::open(&zip_path).map_err(|e| e.to_string())?;
     let mut zip_archive = zip::ZipArchive::new(zip_file).map_err(|e| e.to_string())?;
-    let inner_targz = zip_archive.by_index(0).map_err(|e| e.to_string())?;
-    let gz = flate2::read::GzDecoder::new(inner_targz);
-    tar::Archive::new(gz).unpack(&dest).map_err(|e| e.to_string())?;
+
+    if cfg!(target_os = "windows") {
+        // Windows' build wraps a second, plain .zip - unlike the macOS/Linux
+        // builds' inner gzip'd tar, a nested zip needs Seek to read its own
+        // central directory, which the outer zip's streaming entry reader
+        // doesn't provide. Buffering it fully in memory first (tens of MB,
+        // fine) and reopening from a Cursor gives it that.
+        let mut inner_zip = zip_archive.by_index(0).map_err(|e| e.to_string())?;
+        let mut buf = Vec::new();
+        std::io::Read::read_to_end(&mut inner_zip, &mut buf).map_err(|e| e.to_string())?;
+        drop(inner_zip);
+        let mut inner_archive =
+            zip::ZipArchive::new(std::io::Cursor::new(buf)).map_err(|e| e.to_string())?;
+        inner_archive.extract(&dest).map_err(|e| e.to_string())?;
+    } else {
+        let inner_targz = zip_archive.by_index(0).map_err(|e| e.to_string())?;
+        let gz = flate2::read::GzDecoder::new(inner_targz);
+        tar::Archive::new(gz).unpack(&dest).map_err(|e| e.to_string())?;
+    }
 
     Ok(format!("Extracted to {}", dest.display()))
 }
@@ -89,68 +114,189 @@ fn extract_tommyternal(app: tauri::AppHandle) -> Result<String, String> {
 #[tauri::command]
 fn extract_openjo(app: tauri::AppHandle) -> Result<String, String> {
     let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let archive_path = app_data.join("openjo_macos_arm64.tar.gz");
     let dest = app_data.join("extracted").join("openjo");
 
-    let file = std::fs::File::open(&archive_path).map_err(|e| e.to_string())?;
+    if cfg!(target_os = "windows") {
+        // Windows' release is a plain, un-nested zip - everything (the
+        // binary, its dlls, the OpenJK/ mod folder) sits at the top level
+        // already, no wrapper folder or dlopen shim to unpack around.
+        let zip_path = app_data.join("openjo_windows_x64.zip");
+        let file = std::fs::File::open(&zip_path).map_err(|e| e.to_string())?;
+        let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+        archive.extract(&dest).map_err(|e| e.to_string())?;
+        return Ok(format!("Extracted to {}", dest.display()));
+    }
+
+    let archive_name = if cfg!(target_os = "linux") {
+        "openjo_linux_x64.tar.gz"
+    } else {
+        "openjo_macos_arm64.tar.gz"
+    };
+    let file = std::fs::File::open(app_data.join(archive_name)).map_err(|e| e.to_string())?;
     let gz = flate2::read::GzDecoder::new(file);
     tar::Archive::new(gz).unpack(&dest).map_err(|e| e.to_string())?;
 
-    let app_bundle = dest.join("openjo_sp.arm64.app");
-    // Removing any stale copy first means an Update (re-extracting into the
-    // same app_data path) never trips over a previous write's permissions;
-    // the explicit chmod after is defensive so this stays ours to overwrite
-    // next time regardless.
-    let sdl3_dest = app_bundle.join("Contents/Frameworks/libSDL3.dylib");
-    let _ = std::fs::remove_file(&sdl3_dest);
-    std::fs::write(&sdl3_dest, BUNDLED_SDL3).map_err(|e| e.to_string())?;
-    #[cfg(unix)]
-    {
-        let mut perms = std::fs::metadata(&sdl3_dest).map_err(|e| e.to_string())?.permissions();
-        perms.set_mode(0o644);
-        std::fs::set_permissions(&sdl3_dest, perms).map_err(|e| e.to_string())?;
+    // The SDL3 dlopen shim and ad-hoc resign below are only needed for the
+    // macOS .app bundle - Windows ships its own real SDL2.dll and Linux its
+    // own real SDL2 (system or bundled), and neither has a code-signing
+    // concept for this to work around at all.
+    if cfg!(target_os = "macos") {
+        let app_bundle = dest.join("openjo_sp.arm64.app");
+        // Removing any stale copy first means an Update (re-extracting into
+        // the same app_data path) never trips over a previous write's
+        // permissions; the explicit chmod after is defensive so this stays
+        // ours to overwrite next time regardless.
+        let sdl3_dest = app_bundle.join("Contents/Frameworks/libSDL3.dylib");
+        let _ = std::fs::remove_file(&sdl3_dest);
+        std::fs::write(&sdl3_dest, BUNDLED_SDL3).map_err(|e| e.to_string())?;
+        #[cfg(unix)]
+        {
+            let mut perms = std::fs::metadata(&sdl3_dest).map_err(|e| e.to_string())?.permissions();
+            perms.set_mode(0o644);
+            std::fs::set_permissions(&sdl3_dest, perms).map_err(|e| e.to_string())?;
+        }
+        resign_app_bundle(&app_bundle)?;
     }
-    resign_app_bundle(&app_bundle)?;
 
     Ok(format!("Extracted to {}", dest.display()))
+}
+
+#[cfg(target_os = "linux")]
+fn extract_jk2mv_linux(app_data: &std::path::Path, dest: &std::path::Path) -> Result<(), String> {
+    // JK2MV has no official portable/tar.gz build for Linux, only a .deb -
+    // it installs to a normal FHS layout (/usr/bin, /usr/lib, /usr/share)
+    // rather than the flat "everything next to the binary" shape every
+    // other build here uses (macOS, Windows, and this project's own Linux
+    // Tommyternal build all use that flat shape). Reading the handful of
+    // files an actual install needs straight out of the .deb - an ar
+    // archive wrapping control.tar.gz/data.tar.gz - and laying them out
+    // flat avoids requiring dpkg or root just to get at them.
+    //
+    // Unverified on real Linux hardware: jk2mvmenu_amd64.so ships at
+    // /usr/lib in the .deb, but the binary's own strings have no hardcoded
+    // path for it, only the bare name - and every other build here
+    // (including this same codebase's Windows build) keeps its equivalent
+    // menu library flat next to the main binary rather than in a lib/
+    // folder, which is the closest evidence available for where this
+    // engine actually looks. If jk2mvmp can't find its menu library at
+    // runtime, this placement is the first thing to revisit.
+    let deb_path = app_data.join("jk2mv_linux_x64.deb");
+    let _ = std::fs::remove_dir_all(dest);
+    std::fs::create_dir_all(dest.join("base")).map_err(|e| e.to_string())?;
+
+    let deb_file = std::fs::File::open(&deb_path).map_err(|e| e.to_string())?;
+    let mut deb_archive = ar::Archive::new(deb_file);
+    let mut data_tar_gz: Option<Vec<u8>> = None;
+    while let Some(entry_result) = deb_archive.next_entry() {
+        let mut entry = entry_result.map_err(|e| e.to_string())?;
+        let name = String::from_utf8_lossy(entry.header().identifier()).to_string();
+        if name.starts_with("data.tar.gz") {
+            let mut buf = Vec::new();
+            std::io::Read::read_to_end(&mut entry, &mut buf).map_err(|e| e.to_string())?;
+            data_tar_gz = Some(buf);
+            break;
+        }
+    }
+    let data_bytes = data_tar_gz
+        .ok_or_else(|| "jk2mv .deb has no data.tar.gz entry - upstream may have changed its packaging".to_string())?;
+
+    let gz = flate2::read::GzDecoder::new(std::io::Cursor::new(data_bytes));
+    let mut tar_archive = tar::Archive::new(gz);
+    for entry_result in tar_archive.entries().map_err(|e| e.to_string())? {
+        let mut entry = entry_result.map_err(|e| e.to_string())?;
+        let path = entry.path().map_err(|e| e.to_string())?.to_string_lossy().to_string();
+        let out_path = match path.as_str() {
+            "./usr/share/jk2mv/base/assetsmv.pk3" => Some(dest.join("base").join("assetsmv.pk3")),
+            "./usr/share/jk2mv/base/assetsmv2.pk3" => Some(dest.join("base").join("assetsmv2.pk3")),
+            "./usr/bin/jk2mvmp" => Some(dest.join("jk2mvmp")),
+            "./usr/lib/jk2mvmenu_amd64.so" => Some(dest.join("jk2mvmenu_amd64.so")),
+            _ => None,
+        };
+        if let Some(out_path) = out_path {
+            entry.unpack(&out_path).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
 fn extract_jk2mv(app: tauri::AppHandle) -> Result<String, String> {
     let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let dmg_path = app_data.join("jk2mv_macos_x86_64.dmg");
-    let mount_point = app_data.join("dmg_mount_jk2mv");
     let dest = app_data.join("extracted").join("jk2mv");
 
-    // Defensive: clear any stale mount left by a previous crashed attempt.
-    let _ = std::process::Command::new("hdiutil")
-        .args(["detach", mount_point.to_str().unwrap()])
-        .output();
-    std::fs::create_dir_all(&mount_point).map_err(|e| e.to_string())?;
-
-    let attach = std::process::Command::new("hdiutil")
-        .args([
-            "attach",
-            dmg_path.to_str().unwrap(),
-            "-nobrowse",
-            "-mountpoint",
-            mount_point.to_str().unwrap(),
-        ])
-        .status()
-        .map_err(|e| e.to_string())?;
-    if !attach.success() {
-        return Err("hdiutil attach failed".to_string());
+    #[cfg(target_os = "linux")]
+    {
+        extract_jk2mv_linux(&app_data, &dest)?;
+        return Ok(format!("Extracted to {}", dest.display()));
     }
 
-    let copy_result = copy_dir_recursive(&mount_point.join("jk2mvmp.app"), &dest.join("jk2mvmp.app"));
+    #[cfg(target_os = "windows")]
+    {
+        // The Windows portable build wraps everything (base/ plus the
+        // client/dedicated exes) in one versioned top-level folder, unlike
+        // the macOS dmg's payload, which already sits flat. Extract to a
+        // scratch location, then move that single folder's contents up to
+        // dest so resolve_jk2mv_install's payload_dir is flat on every
+        // platform, same as find_single_subdir already does for Tommyternal.
+        let zip_path = app_data.join("jk2mv_windows_x64.zip");
+        let raw_dest = app_data.join("extracted").join("jk2mv_raw");
+        let _ = std::fs::remove_dir_all(&raw_dest);
+        let file = std::fs::File::open(&zip_path).map_err(|e| e.to_string())?;
+        let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+        archive.extract(&raw_dest).map_err(|e| e.to_string())?;
+        let inner = find_single_subdir(&raw_dest)?;
+        let _ = std::fs::remove_dir_all(&dest);
+        std::fs::rename(&inner, &dest).map_err(|e| e.to_string())?;
+        let _ = std::fs::remove_dir_all(&raw_dest);
+        return Ok(format!("Extracted to {}", dest.display()));
+    }
 
-    let _ = std::process::Command::new("hdiutil")
-        .args(["detach", mount_point.to_str().unwrap()])
-        .status();
+    #[cfg(target_os = "macos")]
+    {
+        let dmg_path = app_data.join("jk2mv_macos_x86_64.dmg");
+        let mount_point = app_data.join("dmg_mount_jk2mv");
 
-    copy_result?;
-    resign_app_bundle(&dest.join("jk2mvmp.app"))?;
-    Ok(format!("Extracted to {}", dest.display()))
+        // Defensive: clear any stale mount left by a previous crashed attempt.
+        let _ = std::process::Command::new("hdiutil")
+            .args(["detach", mount_point.to_str().unwrap()])
+            .output();
+        std::fs::create_dir_all(&mount_point).map_err(|e| e.to_string())?;
+
+        let attach = std::process::Command::new("hdiutil")
+            .args([
+                "attach",
+                dmg_path.to_str().unwrap(),
+                "-nobrowse",
+                "-mountpoint",
+                mount_point.to_str().unwrap(),
+            ])
+            .status()
+            .map_err(|e| e.to_string())?;
+        if !attach.success() {
+            return Err("hdiutil attach failed".to_string());
+        }
+
+        let copy_result = copy_dir_recursive(&mount_point.join("jk2mvmp.app"), &dest.join("jk2mvmp.app"));
+
+        let _ = std::process::Command::new("hdiutil")
+            .args(["detach", mount_point.to_str().unwrap()])
+            .status();
+
+        copy_result?;
+        resign_app_bundle(&dest.join("jk2mvmp.app"))?;
+        return Ok(format!("Extracted to {}", dest.display()));
+    }
+
+    #[allow(unreachable_code)]
+    Err("Unsupported platform".to_string())
+}
+
+// Lets the frontend pick the right manifest entry (each client mod ships a
+// different download per OS) without needing its own OS-detection plugin -
+// std::env::consts::OS already returns exactly "macos"/"windows"/"linux".
+#[tauri::command]
+fn current_platform() -> &'static str {
+    std::env::consts::OS
 }
 
 const JK2_STEAM_APP_ID: u32 = 6030;
@@ -226,6 +372,16 @@ fn find_base_dir(install_root: &std::path::Path) -> Result<std::path::PathBuf, S
     let direct = install_root.join("base");
     if direct.is_dir() {
         return Ok(direct);
+    }
+    // Steam's Windows release of Jedi Outcast nests everything under a
+    // GameData\ folder (confirmed against the game's own Steam community
+    // install guides) instead of putting base/ at the install root - and
+    // since there's no native Linux build of the game at all, a Linux Steam
+    // install runs it through Proton, which stages the exact same Windows
+    // directory layout on disk. So this same check covers both platforms.
+    let gamedata = install_root.join("GameData").join("base");
+    if gamedata.is_dir() {
+        return Ok(gamedata);
     }
     let entries = std::fs::read_dir(install_root).map_err(|e| e.to_string())?;
     for entry in entries {
@@ -601,7 +757,8 @@ fn uninstall_tommyternal(app: tauri::AppHandle) -> Result<String, String> {
 #[tauri::command]
 fn play_tommyternal(app: tauri::AppHandle, connect_address: Option<String>) -> Result<String, String> {
     let (_, game_root) = find_jk2_base_and_root(&app)?;
-    let binary = game_root.join("eternaljk2mvmp");
+    let binary_name = if cfg!(target_os = "windows") { "eternaljk2mvmp.exe" } else { "eternaljk2mvmp" };
+    let binary = game_root.join(binary_name);
     let mut cmd = std::process::Command::new(&binary);
     cmd.current_dir(&game_root);
     if client_has_pk3_mods(&game_root, TOMMYTERNAL_MOD_ID) {
@@ -736,14 +893,33 @@ fn uninstall_openjo(app: tauri::AppHandle) -> Result<String, String> {
 fn play_openjo(app: tauri::AppHandle) -> Result<String, String> {
     // Single-player only - no +connect support here (see manifest description).
     let (_, game_root) = find_jk2_base_and_root(&app)?;
-    let app_bundle = game_root.join("openjo_sp.arm64.app");
-    let mut cmd = std::process::Command::new("open");
-    cmd.arg(&app_bundle);
-    if client_has_pk3_mods(&game_root, OPENJO_MOD_ID) {
-        cmd.args(["--args", "+set", "fs_game", &client_mod_folder_name(OPENJO_MOD_ID)]);
+
+    if cfg!(target_os = "macos") {
+        let app_bundle = game_root.join("openjo_sp.arm64.app");
+        let mut cmd = std::process::Command::new("open");
+        cmd.arg(&app_bundle);
+        if client_has_pk3_mods(&game_root, OPENJO_MOD_ID) {
+            cmd.args(["--args", "+set", "fs_game", &client_mod_folder_name(OPENJO_MOD_ID)]);
+        }
+        cmd.spawn().map_err(|e| e.to_string())?;
+        return Ok(format!("Launched {}", app_bundle.display()));
     }
-    cmd.spawn().map_err(|e| e.to_string())?;
-    Ok(format!("Launched {}", app_bundle.display()))
+
+    // Windows/Linux have no app-bundle concept - the binary is launched
+    // directly, so unlike the "open --args" dance above, extra flags just
+    // go straight on the command line.
+    let binary_name = if cfg!(target_os = "windows") { "openjo_sp.x86_64.exe" } else { "openjo_sp.x86_64" };
+    let binary = game_root.join(binary_name);
+    let mut cmd = std::process::Command::new(&binary);
+    cmd.current_dir(&game_root);
+    if client_has_pk3_mods(&game_root, OPENJO_MOD_ID) {
+        cmd.args(["+set", "fs_game", &client_mod_folder_name(OPENJO_MOD_ID)]);
+    }
+    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(format!("Launched {}", binary.display()))
 }
 
 const JK2MV_MOD_ID: &str = "jk2mv";
@@ -784,12 +960,12 @@ fn uninstall_jk2mv(app: tauri::AppHandle) -> Result<String, String> {
 #[tauri::command]
 fn play_jk2mv(app: tauri::AppHandle, connect_address: Option<String>) -> Result<String, String> {
     let (_, game_root) = find_jk2_base_and_root(&app)?;
-    let app_bundle = game_root.join("jk2mvmp.app");
-    let mut cmd = std::process::Command::new("open");
-    cmd.arg(&app_bundle);
+
     // `open --args` only accepts one --args flag - everything after it is
     // passed straight through to the app, so both +set and +connect (when
-    // present) have to be collected first and appended together.
+    // present) have to be collected first and appended together. Collected
+    // up front since Windows/Linux want the exact same flags, just passed
+    // straight on the command line instead of behind `open --args`.
     let mut extra_args: Vec<String> = Vec::new();
     if client_has_pk3_mods(&game_root, JK2MV_MOD_ID) {
         extra_args.push("+set".to_string());
@@ -800,12 +976,29 @@ fn play_jk2mv(app: tauri::AppHandle, connect_address: Option<String>) -> Result<
         extra_args.push("+connect".to_string());
         extra_args.push(address.clone());
     }
-    if !extra_args.is_empty() {
-        cmd.arg("--args");
-        cmd.args(&extra_args);
+
+    if cfg!(target_os = "macos") {
+        let app_bundle = game_root.join("jk2mvmp.app");
+        let mut cmd = std::process::Command::new("open");
+        cmd.arg(&app_bundle);
+        if !extra_args.is_empty() {
+            cmd.arg("--args");
+            cmd.args(&extra_args);
+        }
+        cmd.spawn().map_err(|e| e.to_string())?;
+        return Ok(format!("Launched {}", app_bundle.display()));
     }
-    cmd.spawn().map_err(|e| e.to_string())?;
-    Ok(format!("Launched {}", app_bundle.display()))
+
+    let binary_name = if cfg!(target_os = "windows") { "jk2mvmp.exe" } else { "jk2mvmp" };
+    let binary = game_root.join(binary_name);
+    let mut cmd = std::process::Command::new(&binary);
+    cmd.current_dir(&game_root);
+    cmd.args(&extra_args);
+    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(format!("Launched {}", binary.display()))
 }
 
 // --- Custom PK3 mods --------------------------------------------------------
@@ -1213,6 +1406,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
+            current_platform,
             extract_nwh,
             extract_tommyternal,
             extract_openjo,

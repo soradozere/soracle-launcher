@@ -7,11 +7,19 @@ assets around. It also manages custom PK3 mods per client, browses the
 [Monolith](https://github.com/fl4te/monolith) community mod database, and
 shows JK2 CTF player stats and activity on its Home screen.
 
-**Platform status**: macOS is fully supported today (install/update/launch
-for all three clients, PK3 mod management, auto-updates). Windows and Linux
-currently build and run the launcher shell itself, but the client
-install/launch pipelines are still macOS-only — that's the next phase of
-work.
+**Platform status**: macOS is fully supported and well-tested (install/
+update/launch for all three clients, PK3 mod management, auto-updates).
+Windows and Linux now have the same install/update/launch pipeline for all
+three clients too, built against each project's real Windows/Linux release
+assets - but unlike macOS, none of it has been run on a real Windows or
+Linux machine yet, only verified by hand against the actual downloaded
+archives and compiled successfully in CI. One spot in particular is a bigger
+leap than the rest: JK2MV has no official portable Linux build, only a
+`.deb`, so its Linux install is reconstructed from that package's contents
+rather than an archive built to be dropped in as-is - if it doesn't launch,
+that's the first thing to check (see the comment on `extract_jk2mv_linux` in
+`src-tauri/src/lib.rs`). If you try either platform, an issue report (what
+happened, plus the client and OS) is genuinely useful.
 
 ## Download
 

@@ -3,9 +3,15 @@ const SORACLE_BASE = "https://jk2ctf.com";
 const SESSION_FILE = "soracle_session.json";
 const STEAM_STORE_URL = "https://store.steampowered.com/app/6030/STAR_WARS_Jedi_Knight_II__Jedi_Outcast/";
 
+// One filename per OS per client - has to match exactly what that OS's
+// extract_* Rust command expects to find under AppData (see lib.rs).
 const MOD_HANDLERS = {
   TommyternalJK2MV: {
-    filename: "tommyternal_macos_arm64.zip",
+    filenames: {
+      macos: "tommyternal_macos_arm64.zip",
+      windows: "tommyternal_windows_x64.zip",
+      linux: "tommyternal_linux_x64.zip",
+    },
     extractCommand: "extract_tommyternal",
     installCommand: "install_tommyternal",
     checkInstalledCommand: "is_tommyternal_installed",
@@ -13,7 +19,11 @@ const MOD_HANDLERS = {
     uninstallCommand: "uninstall_tommyternal",
   },
   OpenJO: {
-    filename: "openjo_macos_arm64.tar.gz",
+    filenames: {
+      macos: "openjo_macos_arm64.tar.gz",
+      windows: "openjo_windows_x64.zip",
+      linux: "openjo_linux_x64.tar.gz",
+    },
     extractCommand: "extract_openjo",
     installCommand: "install_openjo",
     checkInstalledCommand: "is_openjo_installed",
@@ -21,7 +31,11 @@ const MOD_HANDLERS = {
     uninstallCommand: "uninstall_openjo",
   },
   JK2MV: {
-    filename: "jk2mv_macos_x86_64.dmg",
+    filenames: {
+      macos: "jk2mv_macos_x86_64.dmg",
+      windows: "jk2mv_windows_x64.zip",
+      linux: "jk2mv_linux_x64.deb",
+    },
     extractCommand: "extract_jk2mv",
     installCommand: "install_jk2mv",
     checkInstalledCommand: "is_jk2mv_installed",
@@ -29,6 +43,22 @@ const MOD_HANDLERS = {
     uninstallCommand: "uninstall_jk2mv",
   },
 };
+
+// Set once at startup from the Rust side (std::env::consts::OS) - "macos",
+// "windows", or "linux". Defaults to macos only so nothing throws if it's
+// ever read before init() finishes.
+let currentPlatform = "macos";
+
+// A mod's download moved from one flat {url, sha256} to a
+// {platforms: {macos: {...}, windows: {...}, linux: {...}}} shape so each
+// OS can point at its own release asset. Falls back to the mod object
+// itself for anything not yet updated to carry a platforms block (or the
+// macOS entry, if the current platform specifically hasn't been added yet)
+// so an older manifest shape never just breaks instead of degrading.
+function modPlatformInfo(mod) {
+  if (!mod.platforms) return mod;
+  return mod.platforms[currentPlatform] ?? mod.platforms.macos ?? mod;
+}
 
 // Only clients that actually speak the multiplayer protocol can join -
 // OpenJO is single-player only.
@@ -1129,12 +1159,14 @@ async function handleAction(name, action) {
     if (action === "install" || action === "update") {
       modState[name].message = "Downloading...";
       renderMain();
-      const { verified, actual } = await downloadFile(mod.url, handler.filename, mod.sha256);
+      const platformInfo = modPlatformInfo(mod);
+      const filename = handler.filenames[currentPlatform] ?? handler.filenames.macos;
+      const { verified, actual } = await downloadFile(platformInfo.url, filename, platformInfo.sha256);
       let warning = "";
       if (verified === false) {
         warning =
           " ⚠️ Checksum didn't match the pinned release - could just mean there's a newer upstream build we haven't verified yet, but treat it with some caution.";
-        console.warn(`Checksum mismatch for ${name}: expected ${mod.sha256}, got ${actual}`);
+        console.warn(`Checksum mismatch for ${name}: expected ${platformInfo.sha256}, got ${actual}`);
       }
       modState[name].message = "Extracting...";
       renderMain();
@@ -1260,6 +1292,11 @@ async function installPendingUpdate() {
 async function init() {
   ensureDefaultFavoriteServers();
   checkGameFolder();
+  try {
+    currentPlatform = await window.__TAURI__.core.invoke("current_platform");
+  } catch (err) {
+    console.error("Failed to detect platform, defaulting to macos:", err);
+  }
   session = await loadSession();
   renderSidebar();
   renderMain();

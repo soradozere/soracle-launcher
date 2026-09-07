@@ -15,8 +15,14 @@
         { "url": "https://gist.githubusercontent.com/soradozere/a5ac8df67ac85687d20b4901ae1f1af0/raw/manifest.json" },
         { "url": "https://jk2t.ddns.net/*" },
         { "url": "https://github.com/TomArrow/jk2mv/releases/download/latest-postxp/macOS.Package.Portable.Release.arm64.zip" },
+        { "url": "https://github.com/TomArrow/jk2mv/releases/download/latest-postxp/Windows.Package.Portable.RelWithDebInfo.x64.zip" },
+        { "url": "https://github.com/TomArrow/jk2mv/releases/download/latest-postxp/Linux.Package.Portable.-.ubuntu-22.04.Release.zip" },
         { "url": "https://github.com/JACoders/OpenJK/releases/download/latest/OpenJO-macos-arm64.tar.gz" },
+        { "url": "https://github.com/JACoders/OpenJK/releases/download/latest/OpenJO-windows-x86_64.zip" },
+        { "url": "https://github.com/JACoders/OpenJK/releases/download/latest/OpenJO-linux-x86_64.tar.gz" },
         { "url": "https://github.com/mvdevs/jk2mv/releases/download/1.4.1/jk2mv-v1.4.1-macosx-x86_64.dmg" },
+        { "url": "https://github.com/mvdevs/jk2mv/releases/download/1.4.1/jk2mv-v1.4.1-win32-x64-portable.zip" },
+        { "url": "https://github.com/mvdevs/jk2mv/releases/download/1.4.1/jk2mv-v1.4.1-linux-amd64.deb" },
         { "url": "https://jk2ctf.com/*" },
         { "url": "https://api.github.com/*" }
       ]
