@@ -410,23 +410,22 @@ function renderRecentHighlightsBlock() {
   `;
 }
 
-function favoriteServerBarHtml(address) {
+// One thin row per favorite, all sharing a single card - was one big
+// bordered/glowing "hero" bar per favorite, which multiplied into real
+// clutter once more than one favorite existed.
+function favoriteServerRowHtml(address) {
   const data = serverStatusCache[address];
   if (data === undefined) {
     loadServerStatus(address);
-    return `<div class="favorite-server-bar"><p class="detail-status">Checking a favorite server...</p></div>`;
+    return `<div class="favorite-row"><p class="detail-status">Checking...</p></div>`;
   }
   if (data.error) {
     return `
-      <div class="favorite-server-bar">
-        <div class="favorite-server-row">
-          <span class="favorite-play-btn favorite-play-btn--disabled">Offline</span>
-          <div class="favorite-server-info">
-            <span class="favorite-server-name">${address}</span>
-            <span class="server-meta">Unreachable right now</span>
-          </div>
-          <button class="server-favorite-btn active" data-address="${address}" title="Remove favorite">★</button>
-        </div>
+      <div class="favorite-row">
+        <span class="favorite-play-btn favorite-play-btn--disabled">Offline</span>
+        <span class="favorite-row-name">${address}</span>
+        <span class="favorite-row-meta">Unreachable right now</span>
+        <button class="server-favorite-btn active" data-address="${address}" title="Remove favorite">★</button>
       </div>`;
   }
   const installedJoinable = JOINABLE_CLIENTS.filter((name) => modState[name]?.installed);
@@ -434,34 +433,32 @@ function favoriteServerBarHtml(address) {
   if (installedJoinable.length === 0) {
     playHtml = `<span class="favorite-play-btn favorite-play-btn--disabled">Install a client</span>`;
   } else if (installedJoinable.length === 1) {
-    playHtml = `<button class="favorite-play-btn server-join-btn" data-address="${address}" data-client="${installedJoinable[0]}">Play now</button>`;
+    playHtml = `<button class="favorite-play-btn server-join-btn" data-address="${address}" data-client="${installedJoinable[0]}">Play</button>`;
   } else {
     // More than one option installed - let them pick, same control as the
     // Servers page, instead of silently guessing which one they meant.
     playHtml = `
       <div class="server-join">
-        <button class="favorite-play-btn server-join-btn" data-address="${address}">Play now</button>
+        <button class="favorite-play-btn server-join-btn" data-address="${address}">Play</button>
         <select class="server-client-select">
           ${installedJoinable.map((name) => `<option value="${name}">${mods.find((m) => m.name === name)?.displayName ?? name}</option>`).join("")}
         </select>
       </div>`;
   }
   return `
-    <div class="favorite-server-bar">
-      <div class="favorite-server-row">
-        ${playHtml}
-        <div class="favorite-server-info">
-          <span class="favorite-server-name">${stripQuakeColors(data.hostname)}</span>
-          <span class="server-meta">${data.map} &middot; ${data.players.length}/${data.max_clients} players</span>
-        </div>
-        <button class="server-favorite-btn active" data-address="${address}" title="Remove favorite">★</button>
-      </div>
+    <div class="favorite-row">
+      ${playHtml}
+      <span class="favorite-row-name">${stripQuakeColors(data.hostname)}</span>
+      <span class="favorite-row-meta">${data.map} &middot; ${data.players.length}/${data.max_clients} players</span>
+      <button class="server-favorite-btn active" data-address="${address}" title="Remove favorite">★</button>
       ${serverJoinMessage[address] ? `<p class="detail-status">${serverJoinMessage[address]}</p>` : ""}
     </div>`;
 }
 
 function favoriteServerBlocksHtml() {
-  return getFavoriteServers().map(favoriteServerBarHtml).join("");
+  const addresses = getFavoriteServers();
+  if (addresses.length === 0) return "";
+  return `<div class="favorites-card">${addresses.map(favoriteServerRowHtml).join("")}</div>`;
 }
 
 function renderHomeView(mainEl) {
