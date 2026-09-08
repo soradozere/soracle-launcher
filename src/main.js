@@ -1073,12 +1073,31 @@ function renderMonolithBrowser() {
 }
 
 let installedModsSearch = "";
+let installedModsPage = 0;
+const INSTALLED_MODS_PAGE_SIZE = 60;
 
 function renderInstalledModsResults() {
   const term = installedModsSearch.trim().toLowerCase();
   const matches = term ? pk3Mods.filter((m) => m.filename.toLowerCase().includes(term)) : pk3Mods;
   if (!matches.length) return `<p class="detail-status">No installed mods match "${installedModsSearch}".</p>`;
-  return `<div class="pk3-list">${matches.map(pk3RowHtml).join("")}</div>`;
+
+  const totalPages = Math.ceil(matches.length / INSTALLED_MODS_PAGE_SIZE);
+  installedModsPage = Math.min(installedModsPage, totalPages - 1);
+  const start = installedModsPage * INSTALLED_MODS_PAGE_SIZE;
+  const shown = matches.slice(start, start + INSTALLED_MODS_PAGE_SIZE);
+
+  // Same pager markup/styling as the Monolith browser below it - no need
+  // for a second set of pager styles for what's visually the same control.
+  const pagerHtml =
+    totalPages > 1
+      ? `<div class="monolith-pager">
+           <button id="installed-mods-prev-page" ${installedModsPage === 0 ? "disabled" : ""}>&larr; Prev</button>
+           <span class="monolith-pager-label">Page ${installedModsPage + 1} of ${totalPages} &middot; ${matches.length} mods</span>
+           <button id="installed-mods-next-page" ${installedModsPage >= totalPages - 1 ? "disabled" : ""}>Next &rarr;</button>
+         </div>`
+      : "";
+
+  return `<div class="pk3-list">${shown.map(pk3RowHtml).join("")}</div>${pagerHtml}`;
 }
 
 function renderModsView(mainEl) {
@@ -1555,6 +1574,16 @@ document.getElementById("main").addEventListener("click", (e) => {
     document.getElementById("monolith-results").innerHTML = renderMonolithResults();
     return;
   }
+  if (e.target.closest("#installed-mods-prev-page")) {
+    installedModsPage = Math.max(0, installedModsPage - 1);
+    document.getElementById("installed-mods-results").innerHTML = renderInstalledModsResults();
+    return;
+  }
+  if (e.target.closest("#installed-mods-next-page")) {
+    installedModsPage += 1;
+    document.getElementById("installed-mods-results").innerHTML = renderInstalledModsResults();
+    return;
+  }
   const joinBtn = e.target.closest(".server-join-btn");
   if (joinBtn) {
     // One-click join (data-client) when only one client is installed;
@@ -1602,6 +1631,7 @@ document.getElementById("main").addEventListener("input", (e) => {
   const installedSearchEl = e.target.closest("#installed-mods-search");
   if (installedSearchEl) {
     installedModsSearch = installedSearchEl.value;
+    installedModsPage = 0;
     const resultsEl = document.getElementById("installed-mods-results");
     if (resultsEl) resultsEl.innerHTML = renderInstalledModsResults();
   }
