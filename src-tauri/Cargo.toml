@@ -15,6 +15,13 @@ edition = "2021"
 name = "soracle_launcher_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[profile.release]
+# Local debug symbols (function/variable names for backtraces) aren't useful
+# in a shipped app and were never being stripped - this is the single
+# biggest, completely free win available: no feature, dependency, or
+# behavior change, just less dead weight riding along in every build.
+strip = true
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
