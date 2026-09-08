@@ -1465,6 +1465,21 @@ async fn query_server_status(address: String) -> Result<ServerStatus, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // WebKitGTK's hardware-accelerated (DMA-BUF) rendering path is broken on
+    // a wide range of GPU/driver combinations - reported first-hand on a
+    // Steam Deck (AMD APU): the native window and title bar come up fine,
+    // but the webview paints nothing at all, just a blank white surface.
+    // This is WebKitGTK's own documented escape hatch, and has to be set
+    // before the webview is created - as early in the process as possible.
+    // Sound here: nothing has spawned another thread yet at this point in
+    // startup, so there's no other thread that could be concurrently
+    // reading/writing the environment (env::set_var's actual safety
+    // requirement on Unix).
+    #[cfg(target_os = "linux")]
+    unsafe {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_http::init())
