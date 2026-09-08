@@ -29,24 +29,6 @@ fn resign_app_bundle(app_bundle: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 
-// OpenJO's bundled "libSDL2-2.0.0.dylib" is actually sdl2-compat (SDL2's API
-// re-implemented on top of SDL3), confirmed by strings in the binary itself
-// ("Failed to initialize sdl2-compat library"). It dlopens a real SDL3 at
-// runtime from a fixed set of relative paths - none of which are where
-// Homebrew installs it - so the bundle needs its own copy placed at
-// @loader_path/libSDL3.dylib (sdl2-compat's own directory, Contents/Frameworks)
-// for it to find. Homebrew is the natural source since asking the user to
-// `brew install` a missing system dependency is already how Tommyternal's own
-// SDL2 gap was handled.
-// Vendored directly rather than reached into Homebrew: OpenJO's bundled
-// sdl2-compat needs a real SDL3 to forward to, and requiring every user to
-// `brew install sdl3` before Install even worked was real, needless friction
-// for a general download. This is the official upstream macOS universal
-// binary (SDL3-3.4.16.dmg from github.com/libsdl-org/SDL, the same version
-// Homebrew's own formula builds from) - see resources/libSDL3-LICENSE.txt
-// (zlib, redistribution is fine).
-const BUNDLED_SDL3: &[u8] = include_bytes!("../resources/libSDL3.dylib");
-
 #[tauri::command]
 fn extract_nwh(app: tauri::AppHandle) -> Result<String, String> {
     let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
@@ -142,13 +124,33 @@ fn extract_openjo(app: tauri::AppHandle) -> Result<String, String> {
     // concept for this to work around at all.
     if cfg!(target_os = "macos") {
         let app_bundle = dest.join("openjo_sp.arm64.app");
+        // OpenJO's bundled "libSDL2-2.0.0.dylib" is actually sdl2-compat
+        // (SDL2's API re-implemented on top of SDL3), confirmed by strings
+        // in the binary itself ("Failed to initialize sdl2-compat library").
+        // It dlopens a real SDL3 at runtime from a fixed set of relative
+        // paths - none of which are where Homebrew installs it - so the
+        // bundle needs its own copy placed at @loader_path/libSDL3.dylib
+        // (sdl2-compat's own directory, Contents/Frameworks) for it to find.
+        // Vendored rather than reached into Homebrew: requiring every user
+        // to `brew install sdl3` before Install even worked was real,
+        // needless friction. This is the official upstream macOS universal
+        // binary (SDL3-3.4.16.dmg from github.com/libsdl-org/SDL, the same
+        // version Homebrew's own formula builds from) - see
+        // resources/libSDL3-LICENSE.txt (zlib, redistribution is fine).
+        //
+        // Bundled as a real Resources/ file (tauri.conf.json's
+        // bundle.macOS.files) rather than compiled in via include_bytes! -
+        // that used to put all 5MB directly in the executable's own
+        // __TEXT,__const section, present in every build on every platform
+        // even though only a macOS OpenJO install ever needs it.
+        let sdl3_resource = app.path().resource_dir().map_err(|e| e.to_string())?.join("libSDL3.dylib");
         // Removing any stale copy first means an Update (re-extracting into
         // the same app_data path) never trips over a previous write's
         // permissions; the explicit chmod after is defensive so this stays
         // ours to overwrite next time regardless.
         let sdl3_dest = app_bundle.join("Contents/Frameworks/libSDL3.dylib");
         let _ = std::fs::remove_file(&sdl3_dest);
-        std::fs::write(&sdl3_dest, BUNDLED_SDL3).map_err(|e| e.to_string())?;
+        std::fs::copy(&sdl3_resource, &sdl3_dest).map_err(|e| e.to_string())?;
         #[cfg(unix)]
         {
             let mut perms = std::fs::metadata(&sdl3_dest).map_err(|e| e.to_string())?.permissions();

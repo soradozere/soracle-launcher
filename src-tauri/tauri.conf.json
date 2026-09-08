@@ -35,7 +35,10 @@
       "icons/icon.ico"
     ],
     "macOS": {
-      "signingIdentity": "-"
+      "signingIdentity": "-",
+      "files": {
+        "resources/libSDL3.dylib": "Resources/libSDL3.dylib"
+      }
     }
   },
   "plugins": {
