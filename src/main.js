@@ -42,6 +42,20 @@ const MOD_HANDLERS = {
     playCommand: "play_jk2mv",
     uninstallCommand: "uninstall_jk2mv",
   },
+  // Linux-only: NWH's own build is Linux-only, full stop (see the FAQ) -
+  // `platforms` restricts which OS this client is even offered on, unlike
+  // the other three above, which install everywhere and so never need it.
+  NWH: {
+    filenames: {
+      linux: "nwh_linux_x64.tar.gz",
+    },
+    platforms: ["linux"],
+    extractCommand: "extract_nwh",
+    installCommand: "install_nwh",
+    checkInstalledCommand: "is_nwh_installed",
+    playCommand: "play_nwh",
+    uninstallCommand: "uninstall_nwh",
+  },
 };
 
 // Set once at startup from the Rust side (std::env::consts::OS) - "macos",
@@ -60,8 +74,18 @@ function modPlatformInfo(mod) {
   return mod.platforms[currentPlatform] ?? mod.platforms.macos ?? mod;
 }
 
+// A handler existing isn't enough on its own anymore - NWH has one but only
+// actually works on Linux (see MOD_HANDLERS.NWH.platforms). Everything else
+// has no `platforms` restriction at all, so this is a no-op for them.
+function modSupportedOnCurrentPlatform(name) {
+  const handler = MOD_HANDLERS[name];
+  return !!handler && (!handler.platforms || handler.platforms.includes(currentPlatform));
+}
+
 // Only clients that actually speak the multiplayer protocol can join -
-// OpenJO is single-player only.
+// OpenJO is single-player only. NWH is added in init() once currentPlatform
+// is known, rather than listed here, since it only belongs in this list on
+// Linux at all.
 const JOINABLE_CLIENTS = ["TommyternalJK2MV", "JK2MV"];
 
 // The Servers page used to discover this list live from the community
@@ -165,8 +189,8 @@ function toggleFavoriteServer(address) {
 // of depending on one specific client being present.
 const PINNED_ACTIONS_KEY = "jk2launcher.pinnedActions";
 const DEFAULT_PINNED_ACTIONS = {
-  ctf: { server: "192.223.24.74:28070", client: "auto" }, // NA East
-  defrag: { server: "176.103.220.40:28070", client: "auto" }, // freedom defrag
+  ctf: { server: "192.223.24.74:28070", client: "NWH" }, // NA East
+  defrag: { server: "176.103.220.40:28070", client: "TommyternalJK2MV" }, // freedom defrag
 };
 
 function loadPinnedActions() {
@@ -195,10 +219,11 @@ function pinnedActionLabel(actionId) {
   return actionId === "ctf" ? "Play CTF" : "Play Defrag";
 }
 
-// NWH (the client organised CTF actually runs on) can't be installed by this
-// launcher yet (see the FAQ entry above) - "auto" can only ever resolve to
-// one of JOINABLE_CLIENTS, so this naturally starts offering NWH the moment
-// it's added there and someone picks it, with no special-casing needed here.
+// NWH (the client organised CTF actually runs on) is only ever in
+// JOINABLE_CLIENTS on Linux (its only supported platform - see the FAQ) -
+// elsewhere the default "NWH" pin just never matches an installed entry and
+// falls through to whatever else is actually installed, same as "auto"
+// would, with playPinnedAction's warning explaining why.
 function resolvePinnedAction(actionId) {
   const pin = pinnedActions[actionId];
   const installedJoinable = JOINABLE_CLIENTS.filter((name) => modState[name]?.installed);
@@ -219,43 +244,57 @@ const PK3_CLIENTS = [
 
 // Kept in sync by hand with jk2ctf.com/faq's ACCOUNT + LAUNCHER sections -
 // embedded here so opening it doesn't leave the app. /ctf-101 (gameplay) has
-// no launcher equivalent since none of it is launcher-specific.
+// no launcher equivalent since none of it is launcher-specific. Ordered
+// orientation-first within LAUNCHER (what this is -> what you can install ->
+// how you'd use it day to day -> what goes wrong), matching how someone
+// actually opening this page for the first time thinks about it, rather
+// than the previous arbitrary order that opened on a PK3 question before
+// ever saying what the app even does.
 const FAQ_ENTRIES = [
   {
-    q: "How do I install custom maps or mods (PK3s)?",
-    a: "Use the Mods section in the sidebar. Add PK3s from your own computer, or search and download straight from the Monolith community database - either way, you then choose whether a mod applies to All Clients or just specific ones, and the launcher handles putting it in the right place.",
-  },
-  {
-    q: "How do I get a player account?",
-    a: "There's no sign-up form - an admin sets your name and an initial password. Ask in the community Discord and someone will get you set up.",
-  },
-  {
-    q: "I forgot my password.",
-    a: "Same answer - ask an admin to reset it. There's no email tied to the account, so there's no self-serve reset flow.",
-  },
-  {
-    q: "What's a player profile actually for?",
-    a: 'It\'s your public page at jk2ctf.com/player/[your-name] - stats, badges, titles you\'ve earned, and cosmetics you can equip once unlocked. Sign in above and it\'s editable; anyone can view it without an account.',
-  },
-  {
+    section: "Launcher",
     q: "What is the JK2 Launcher?",
     a: "This app - it installs and updates JK2 client mods for you, no manually copying files into your Jedi Outcast folder. It finds your Steam install automatically.",
   },
   {
+    section: "Launcher",
     q: "Which clients can I install?",
-    a: "JK2MV (the modernised engine most other clients build on), TomArrow's Tommyternal fork (defrag/FFA-focused), and OpenJO (a stability-focused rebuild of the single-player campaign). All three run natively on macOS and Windows.",
+    a: "JK2MV (the modernised engine most other clients build on), TomArrow's Tommyternal fork (defrag/FFA-focused), and OpenJO (a stability-focused rebuild of the single-player campaign). All three run natively on macOS, Windows, and Linux.",
   },
   {
+    section: "Launcher",
     q: "What about NWH?",
     a: 'NWH (Capture the Flag - NWH) is the anti-cheat client organised CTF matches actually run on, but its current build is Linux-only - this launcher can\'t install or run it on macOS or Windows yet.',
   },
   {
+    section: "Launcher",
+    q: "How do I install custom maps or mods (PK3s)?",
+    a: "Use the Mods section in the sidebar. Add PK3s from your own computer, or search and download straight from the Monolith community database - either way, you then choose whether a mod applies to All Clients or just specific ones, and the launcher handles putting it in the right place.",
+  },
+  {
+    section: "Launcher",
+    q: "It says it can't find Jedi Outcast.",
+    a: 'Use Change... next to Game Folder in the sidebar to point the launcher at your install directly, if it\'s somewhere non-standard.',
+  },
+  {
+    section: "Launcher",
     q: "A client won't launch, or crashes immediately.",
     a: "Try Update first - a fresh install often clears it. If that doesn't help, ask in Discord with what you tried.",
   },
   {
-    q: "It says it can't find Jedi Outcast.",
-    a: 'Use Change... next to Game Folder in the sidebar to point the launcher at your install directly, if it\'s somewhere non-standard.',
+    section: "Account",
+    q: "How do I get a player account?",
+    a: "There's no sign-up form - an admin sets your name and an initial password. Ask in the community Discord and someone will get you set up.",
+  },
+  {
+    section: "Account",
+    q: "I forgot my password.",
+    a: "Same answer - ask an admin to reset it. There's no email tied to the account, so there's no self-serve reset flow.",
+  },
+  {
+    section: "Account",
+    q: "What's a player profile actually for?",
+    a: 'It\'s your public page at jk2ctf.com/player/[your-name] - stats, badges, titles you\'ve earned, and cosmetics you can equip once unlocked. Sign in above and it\'s editable; anyone can view it without an account.',
   },
 ];
 
@@ -353,7 +392,7 @@ function renderSidebar() {
   document.getElementById("client-list").innerHTML = mods
     .map((mod) => {
       const state = modState[mod.name] || {};
-      const status = state.installed ? "installed" : MOD_HANDLERS[mod.name] ? "" : "unsupported";
+      const status = state.installed ? "installed" : modSupportedOnCurrentPlatform(mod.name) ? "" : "unsupported";
       const classes = ["client-row", mod.name === selected ? "active" : "", state.installed ? "installed" : ""]
         .filter(Boolean)
         .join(" ");
@@ -864,13 +903,29 @@ function renderServersView(mainEl) {
   `;
 }
 
+function faqEntryHtml(e) {
+  return `<div class="faq-entry"><p class="faq-q">${e.q}</p><p class="faq-a">${e.a}</p></div>`;
+}
+
+// Grouped under the two headings from jk2ctf.com/faq (Launcher, Account)
+// rather than one flat list, in FAQ_ENTRIES' own order within each group -
+// mirrors the real site's structure instead of a run-on list with no
+// signal for "this next question is about something completely different."
 function renderFaqView(mainEl) {
+  const sections = ["Launcher", "Account"];
+  const sectionsHtml = sections
+    .map((section) => {
+      const entries = FAQ_ENTRIES.filter((e) => e.section === section);
+      if (!entries.length) return "";
+      return `
+        <p class="home-feed-label">${section}</p>
+        <div class="faq-list">${entries.map(faqEntryHtml).join("")}</div>`;
+    })
+    .join("");
   mainEl.innerHTML = `
     <span class="footer-nav-link" id="back-to-home-link">&larr; Back to Home</span>
     <div class="detail-header"><h2>Support / FAQ</h2></div>
-    <div class="faq-list">
-      ${FAQ_ENTRIES.map((e) => `<div class="faq-entry"><p class="faq-q">${e.q}</p><p class="faq-a">${e.a}</p></div>`).join("")}
-    </div>
+    ${sectionsHtml}
     <div class="faq-update-row">
       <span class="faq-update-info">JK2 Launcher v0.1 preview</span>
       <button class="faq-update-btn" id="faq-update-btn">${updateLabelText}</button>
@@ -1280,8 +1335,8 @@ function renderMain() {
   }
   const handler = MOD_HANDLERS[mod.name];
   const state = modState[mod.name] || {};
-  let actions = `<span class="detail-badge">Not yet supported for macOS</span>`;
-  if (handler) {
+  let actions = `<span class="detail-badge">Not available on this platform</span>`;
+  if (handler && modSupportedOnCurrentPlatform(mod.name)) {
     if (state.installed) {
       const upToDate = state.installedVersion && state.installedVersion === mod.version;
       actions = upToDate
@@ -1410,7 +1465,7 @@ async function refreshModStates() {
   const { invoke } = window.__TAURI__.core;
   for (const mod of mods) {
     const handler = MOD_HANDLERS[mod.name];
-    if (handler) {
+    if (handler && modSupportedOnCurrentPlatform(mod.name)) {
       try {
         const status = await invoke(handler.checkInstalledCommand);
         modState[mod.name] = { installed: status.installed, installedVersion: status.version };
@@ -1482,6 +1537,11 @@ async function init() {
   } catch (err) {
     console.error("Failed to detect platform, defaulting to macos:", err);
   }
+  // NWH only belongs in the joinable pool on Linux, where it's actually
+  // installable at all (MOD_HANDLERS.NWH.platforms) - added here rather
+  // than listed in JOINABLE_CLIENTS itself since that constant is declared
+  // before currentPlatform is known.
+  if (currentPlatform === "linux") JOINABLE_CLIENTS.push("NWH");
   session = await loadSession();
   renderSidebar();
   renderMain();

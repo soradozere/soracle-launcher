@@ -35,6 +35,13 @@ fn extract_nwh(app: tauri::AppHandle) -> Result<String, String> {
     let archive_path = app_data.join("nwh_linux_x64.tar.gz");
     let dest = app_data.join("extracted").join("nwh");
 
+    // Real archive wraps everything in one top-level folder (confirmed by
+    // hand: nwh_linux_x64/{base,nwh,nwhmp,nwhmenu.qvm}) - cleared first so a
+    // future release that renames that folder (same moving-target risk as
+    // Tommyternal's git-commit-named one) can't leave two behind for
+    // find_single_subdir to choke on.
+    let _ = std::fs::remove_dir_all(&dest);
+
     let file = std::fs::File::open(&archive_path).map_err(|e| e.to_string())?;
     let gz = flate2::read::GzDecoder::new(file);
     let mut archive = tar::Archive::new(gz);
@@ -735,6 +742,64 @@ fn find_jk2_base_and_root(
     Ok((base_dir, game_root))
 }
 
+const NWH_MOD_ID: &str = "nwh";
+
+fn resolve_nwh_install(
+    app: &tauri::AppHandle,
+) -> Result<(std::path::PathBuf, std::path::PathBuf, std::path::PathBuf), String> {
+    let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let payload_dir = find_single_subdir(&app_data.join("extracted").join("nwh"))?;
+    let (base_dir, game_root) = find_jk2_base_and_root(app)?;
+    Ok((payload_dir, base_dir, game_root))
+}
+
+#[tauri::command]
+fn preview_install_nwh(app: tauri::AppHandle) -> Result<String, String> {
+    let (payload_dir, base_dir, game_root) = resolve_nwh_install(&app)?;
+    preview_install(NWH_MOD_ID, &payload_dir, &base_dir, &game_root)
+}
+
+#[tauri::command]
+fn install_nwh(app: tauri::AppHandle, version: String) -> Result<String, String> {
+    let (payload_dir, base_dir, game_root) = resolve_nwh_install(&app)?;
+    install_mod(NWH_MOD_ID, &version, &payload_dir, &base_dir, &game_root)
+}
+
+#[tauri::command]
+fn is_nwh_installed(app: tauri::AppHandle) -> Result<InstalledStatus, String> {
+    let (_, game_root) = find_jk2_base_and_root(&app)?;
+    Ok(installed_status(NWH_MOD_ID, &game_root))
+}
+
+#[tauri::command]
+fn uninstall_nwh(app: tauri::AppHandle) -> Result<String, String> {
+    let (_, game_root) = find_jk2_base_and_root(&app)?;
+    uninstall_mod(NWH_MOD_ID, &game_root)
+}
+
+// NWH only ships a Linux build (see the manifest/FAQ) - nwhmp is a native
+// ELF binary, so this is never reachable on macOS/Windows regardless; the
+// frontend already only offers Install/Play for it when currentPlatform is
+// "linux" (see modSupportedOnCurrentPlatform in main.js).
+#[tauri::command]
+fn play_nwh(app: tauri::AppHandle, connect_address: Option<String>) -> Result<String, String> {
+    let (_, game_root) = find_jk2_base_and_root(&app)?;
+    let binary = game_root.join("nwhmp");
+    let mut cmd = std::process::Command::new(&binary);
+    cmd.current_dir(&game_root);
+    if client_has_pk3_mods(&game_root, NWH_MOD_ID) {
+        cmd.args(["+set", "fs_game", &client_mod_folder_name(NWH_MOD_ID)]);
+    }
+    if let Some(address) = &connect_address {
+        cmd.args(["+connect", address]);
+    }
+    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(format!("Launched {}", binary.display()))
+}
+
 fn resolve_tommyternal_install(
     app: &tauri::AppHandle,
 ) -> Result<(std::path::PathBuf, std::path::PathBuf, std::path::PathBuf), String> {
@@ -1417,6 +1482,11 @@ pub fn run() {
             locate_jk2_base,
             get_game_folder_override,
             pick_game_folder,
+            preview_install_nwh,
+            install_nwh,
+            is_nwh_installed,
+            play_nwh,
+            uninstall_nwh,
             preview_install_tommyternal,
             install_tommyternal,
             is_tommyternal_installed,
