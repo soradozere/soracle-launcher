@@ -472,6 +472,121 @@ button.change-folder:hover {
   margin: 0 0 1.5rem;
 }
 
+.pinned-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin: 0 0 1.2rem;
+  max-width: 68rem;
+}
+
+.pinned-action {
+  flex: 1 1 260px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.9rem;
+  padding: 0.9rem 1rem;
+  background:
+    radial-gradient(ellipse 90% 160% at 0% 50%, rgba(102, 252, 241, 0.08) 0%, transparent 65%),
+    var(--surface-elevated);
+  border: 1px solid var(--primary-dim);
+  border-radius: 8px;
+}
+
+.pinned-action-btn {
+  flex-shrink: 0;
+  font-family: inherit;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--bg);
+  background: var(--primary);
+  border: none;
+  border-radius: 7px;
+  padding: 0.7rem 1.3rem;
+  cursor: pointer;
+}
+
+.pinned-action-btn:hover {
+  background: var(--primary-dim);
+}
+
+.pinned-action-btn:disabled {
+  color: var(--text-dim);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  font-weight: 500;
+  cursor: default;
+}
+
+.pinned-action-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.pinned-action-server {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: var(--text-bright);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pinned-action-meta {
+  font-size: 0.76rem;
+  color: var(--datapad-blue);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pinned-action-edit-btn {
+  flex-shrink: 0;
+  width: 2rem;
+  height: 2rem;
+  line-height: 1;
+  font-size: 0.95rem;
+  color: var(--text-dim);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.pinned-action-edit-btn:hover {
+  color: var(--text-bright);
+  border-color: var(--primary-dim);
+}
+
+.pinned-action .detail-status {
+  flex-basis: 100%;
+  margin: 0.3rem 0 0;
+}
+
+.pinned-edit-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin: 0 0 0.9rem;
+  font-size: 0.78rem;
+  color: var(--text-dim);
+}
+
+.pinned-edit-field select {
+  font-family: inherit;
+  font-size: 0.85rem;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.45rem 0.6rem;
+}
+
 .favorites-card {
   margin: 0 0 1.2rem;
   max-width: 68rem;
@@ -1389,6 +1504,10 @@ button.change-folder:hover {
   border: 1px solid var(--border-hover);
   border-radius: 10px;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+
+.confirm-dialog--wide {
+  width: 380px;
 }
 
 .confirm-title {

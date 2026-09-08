@@ -157,6 +157,60 @@ function toggleFavoriteServer(address) {
   return true;
 }
 
+// Two pinned one-click actions on Home, above the general favorites list -
+// covering the app's two actual use cases (organised CTF play, and casual
+// defrag) instead of making everyone pick a server every time. "auto" means
+// "whichever joinable client is actually installed" rather than a fixed
+// choice, so both buttons work the moment any client is installed instead
+// of depending on one specific client being present.
+const PINNED_ACTIONS_KEY = "jk2launcher.pinnedActions";
+const DEFAULT_PINNED_ACTIONS = {
+  ctf: { server: "192.223.24.74:28070", client: "auto" }, // NA East
+  defrag: { server: "176.103.220.40:28070", client: "auto" }, // freedom defrag
+};
+
+function loadPinnedActions() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(PINNED_ACTIONS_KEY) ?? "null");
+    return {
+      ctf: { ...DEFAULT_PINNED_ACTIONS.ctf, ...parsed?.ctf },
+      defrag: { ...DEFAULT_PINNED_ACTIONS.defrag, ...parsed?.defrag },
+    };
+  } catch {
+    return structuredClone(DEFAULT_PINNED_ACTIONS);
+  }
+}
+
+let pinnedActions = loadPinnedActions();
+
+function savePinnedActions() {
+  try {
+    localStorage.setItem(PINNED_ACTIONS_KEY, JSON.stringify(pinnedActions));
+  } catch {
+    // Private-browsing-style storage block - the customization just won't stick.
+  }
+}
+
+function pinnedActionLabel(actionId) {
+  return actionId === "ctf" ? "Play CTF" : "Play Defrag";
+}
+
+// NWH (the client organised CTF actually runs on) can't be installed by this
+// launcher yet (see the FAQ entry above) - "auto" can only ever resolve to
+// one of JOINABLE_CLIENTS, so this naturally starts offering NWH the moment
+// it's added there and someone picks it, with no special-casing needed here.
+function resolvePinnedAction(actionId) {
+  const pin = pinnedActions[actionId];
+  const installedJoinable = JOINABLE_CLIENTS.filter((name) => modState[name]?.installed);
+  const client = installedJoinable.includes(pin.client) ? pin.client : installedJoinable[0];
+  return { server: pin.server, client };
+}
+
+function serverDisplayName(address) {
+  const data = serverStatusCache[address];
+  return data && !data.error ? stripQuakeColors(data.hostname) : address;
+}
+
 const PK3_CLIENTS = [
   { id: "jk2mv", label: "JK2MV" },
   { id: "tommyternal", label: "TommyternalJK2MV" },
@@ -466,6 +520,117 @@ function renderRecentHighlightsBlock() {
   `;
 }
 
+function pinnedActionButtonHtml(actionId) {
+  const resolved = resolvePinnedAction(actionId);
+  if (serverStatusCache[resolved.server] === undefined) {
+    loadServerStatus(resolved.server);
+  }
+  const status = serverStatusCache[resolved.server];
+  const meta = !status
+    ? "Checking..."
+    : status.error
+      ? "Unreachable right now"
+      : `${status.map} &middot; ${status.players.length}/${status.max_clients} players`;
+  const clientLabel = resolved.client
+    ? (mods.find((m) => m.name === resolved.client)?.displayName ?? resolved.client)
+    : "Install a client to use this";
+
+  return `
+    <div class="pinned-action">
+      <button class="pinned-action-btn" data-pinned-play="${actionId}" ${resolved.client ? "" : "disabled"}>${pinnedActionLabel(actionId)}</button>
+      <div class="pinned-action-info">
+        <span class="pinned-action-server">${serverDisplayName(resolved.server)}</span>
+        <span class="pinned-action-meta">${meta} &middot; ${clientLabel}</span>
+      </div>
+      <button class="pinned-action-edit-btn" data-pinned-edit="${actionId}" title="Customize ${pinnedActionLabel(actionId)}">⚙</button>
+      ${serverJoinMessage[resolved.server] ? `<p class="detail-status">${serverJoinMessage[resolved.server]}</p>` : ""}
+    </div>`;
+}
+
+function pinnedActionsHtml() {
+  return `<div class="pinned-actions">${pinnedActionButtonHtml("ctf")}${pinnedActionButtonHtml("defrag")}</div>`;
+}
+
+// A themed small form dialog, same overlay/backdrop-cancels pattern as
+// showConfirmDialog - resolves the picked {server, client}, or null if
+// cancelled.
+function editPinnedAction(actionId) {
+  const pin = pinnedActions[actionId];
+  const installedJoinable = JOINABLE_CLIENTS.filter((name) => modState[name]?.installed);
+  // Every known/favorited address, plus whatever's currently pinned even if
+  // it's since fallen off both lists - never silently drop the current pick.
+  const serverOptions = Array.from(new Set([...getFavoriteServers(), ...KNOWN_SERVERS, pin.server]));
+
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "confirm-overlay";
+    overlay.innerHTML = `
+      <div class="confirm-dialog confirm-dialog--wide">
+        <h3 class="confirm-title">Customize ${pinnedActionLabel(actionId)}</h3>
+        <label class="pinned-edit-field">
+          <span>Server</span>
+          <select class="pinned-edit-server">
+            ${serverOptions.map((addr) => `<option value="${addr}" ${addr === pin.server ? "selected" : ""}>${serverDisplayName(addr)}</option>`).join("")}
+          </select>
+        </label>
+        <label class="pinned-edit-field">
+          <span>Client</span>
+          <select class="pinned-edit-client">
+            <option value="auto" ${pin.client === "auto" ? "selected" : ""}>Auto (first installed client)</option>
+            ${installedJoinable.map((name) => `<option value="${name}" ${pin.client === name ? "selected" : ""}>${mods.find((m) => m.name === name)?.displayName ?? name}</option>`).join("")}
+          </select>
+        </label>
+        <div class="confirm-actions">
+          <button class="confirm-cancel-btn">Cancel</button>
+          <button class="confirm-ok-btn">Save</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+
+    function finish(result) {
+      overlay.remove();
+      resolve(result);
+    }
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay) finish(null);
+    });
+    overlay.querySelector(".confirm-cancel-btn").addEventListener("click", () => finish(null));
+    overlay.querySelector(".confirm-ok-btn").addEventListener("click", () => {
+      finish({
+        server: overlay.querySelector(".pinned-edit-server").value,
+        client: overlay.querySelector(".pinned-edit-client").value,
+      });
+    });
+  });
+}
+
+async function openPinnedActionEditor(actionId) {
+  const result = await editPinnedAction(actionId);
+  if (!result) return;
+  pinnedActions[actionId] = result;
+  savePinnedActions();
+  renderMain();
+}
+
+async function playPinnedAction(actionId) {
+  const resolved = resolvePinnedAction(actionId);
+  if (!resolved.client) return;
+  // NWH is the client organised CTF actually runs on, but it isn't
+  // installable in this launcher yet (see the FAQ) - "auto" can only ever
+  // land on an installed JOINABLE_CLIENTS entry, so warn rather than just
+  // silently joining with a substitute that some servers won't accept.
+  if (actionId === "ctf" && resolved.client !== "NWH") {
+    const clientLabel = mods.find((m) => m.name === resolved.client)?.displayName ?? resolved.client;
+    const proceed = await showConfirmDialog({
+      title: "Heads up",
+      message: `Some CTF servers require the NWH client for anti-cheat, which this launcher can't install yet. You'll be joining with ${clientLabel} instead.`,
+      confirmLabel: "Continue",
+    });
+    if (!proceed) return;
+  }
+  await joinServer(resolved.client, resolved.server);
+}
+
 // One thin row per favorite, all sharing a single card - was one big
 // bordered/glowing "hero" bar per favorite, which multiplied into real
 // clutter once more than one favorite existed.
@@ -557,6 +722,7 @@ function renderHomeView(mainEl) {
   mainEl.innerHTML = `
     ${welcome}
     <p class="home-strap">Download, update and launch a client from the sidebar, and see what the playerbase has been up to below.</p>
+    ${pinnedActionsHtml()}
     ${favoriteServerBlocksHtml()}
     ${loginPromptHtml}
     ${renderRecentHighlightsBlock()}
@@ -1336,6 +1502,16 @@ document.getElementById("main").addEventListener("click", (e) => {
   const btn = e.target.closest("button[data-action]");
   if (btn) {
     handleAction(selected, btn.dataset.action);
+    return;
+  }
+  const pinnedPlayBtn = e.target.closest("[data-pinned-play]");
+  if (pinnedPlayBtn && !pinnedPlayBtn.disabled) {
+    playPinnedAction(pinnedPlayBtn.dataset.pinnedPlay);
+    return;
+  }
+  const pinnedEditBtn = e.target.closest("[data-pinned-edit]");
+  if (pinnedEditBtn) {
+    openPinnedActionEditor(pinnedEditBtn.dataset.pinnedEdit);
     return;
   }
   if (e.target.closest("#back-to-home-link")) {
