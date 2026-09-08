@@ -1465,19 +1465,26 @@ async fn query_server_status(address: String) -> Result<ServerStatus, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // WebKitGTK's hardware-accelerated (DMA-BUF) rendering path is broken on
-    // a wide range of GPU/driver combinations - reported first-hand on a
-    // Steam Deck (AMD APU): the native window and title bar come up fine,
-    // but the webview paints nothing at all, just a blank white surface.
-    // This is WebKitGTK's own documented escape hatch, and has to be set
-    // before the webview is created - as early in the process as possible.
-    // Sound here: nothing has spawned another thread yet at this point in
-    // startup, so there's no other thread that could be concurrently
-    // reading/writing the environment (env::set_var's actual safety
-    // requirement on Unix).
+    // WebKitGTK's accelerated rendering is broken on a wide range of
+    // GPU/driver combinations - reported first-hand on a Steam Deck (AMD
+    // APU): the native window and title bar come up fine, but the webview
+    // paints nothing at all, just a blank white surface. Disabling the
+    // DMA-BUF renderer alone (WebKitGTK's first documented escape hatch)
+    // didn't fix it on that same real hardware - going further and forcing
+    // fully unaccelerated rendering, both in WebKit and at the GL layer
+    // underneath it, rather than one narrower flag at a time: this app's
+    // whole UI is plain HTML/CSS with no need for GPU compositing anyway,
+    // so there's no real cost to always ruling GPU-path bugs out entirely.
+    // All of this has to be set before the webview/GL context is created -
+    // as early in the process as possible. Sound here: nothing has spawned
+    // another thread yet at this point in startup, so there's no other
+    // thread that could be concurrently reading/writing the environment
+    // (env::set_var's actual safety requirement on Unix).
     #[cfg(target_os = "linux")]
     unsafe {
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+        std::env::set_var("LIBGL_ALWAYS_SOFTWARE", "1");
     }
 
     tauri::Builder::default()
