@@ -1546,19 +1546,38 @@ async function init() {
   renderSidebar();
   renderMain();
 
+  if (!(await loadManifest())) return;
+  await refreshModStates();
+  checkForUpdates(true);
+}
+
+// A failed fetch here (a network hiccup, a VPN/DNS blip, no connection yet
+// at launch) used to strand the app permanently with no client list and no
+// way to recover short of fully restarting it - added a Retry button rather
+// than assuming the first attempt is the only one that'll ever matter.
+async function loadManifest() {
   const clientListEl = document.getElementById("client-list");
   try {
     const { fetch } = window.__TAURI__.http;
     const res = await fetch(MANIFEST_URL);
     mods = (await res.json()).mods;
+    return true;
   } catch (err) {
-    clientListEl.innerHTML = `<p class="sidebar-loading">Error: ${err}</p>`;
+    clientListEl.innerHTML = `
+      <p class="sidebar-loading">Couldn't reach the manifest - check your connection.</p>
+      <p class="sidebar-loading">${err}</p>
+      <button id="retry-manifest-btn" class="change-folder">Retry</button>`;
     console.error("Manifest fetch failed:", err);
-    return;
+    return false;
   }
+}
 
-  await refreshModStates();
-  checkForUpdates(true);
+async function retryManifestLoad() {
+  if (await loadManifest()) {
+    renderSidebar();
+    await refreshModStates();
+    checkForUpdates(true);
+  }
 }
 
 document.getElementById("home-nav-row").addEventListener("click", () => selectClient("__home__"));
@@ -1573,6 +1592,10 @@ document.getElementById("sign-out-nav-row").addEventListener("click", () => {
 });
 
 document.getElementById("client-list").addEventListener("click", (e) => {
+  if (e.target.closest("#retry-manifest-btn")) {
+    retryManifestLoad();
+    return;
+  }
   const row = e.target.closest(".client-row");
   if (row) selectClient(row.dataset.name);
 });
