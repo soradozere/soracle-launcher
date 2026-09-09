@@ -1465,16 +1465,22 @@ async fn query_server_status(address: String) -> Result<ServerStatus, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // WebKitGTK's accelerated rendering is broken on a wide range of
-    // GPU/driver combinations - reported first-hand on a Steam Deck (AMD
-    // APU): the native window and title bar come up fine, but the webview
-    // paints nothing at all, just a blank white surface. Disabling the
-    // DMA-BUF renderer alone (WebKitGTK's first documented escape hatch)
-    // didn't fix it on that same real hardware - going further and forcing
-    // fully unaccelerated rendering, both in WebKit and at the GL layer
-    // underneath it, rather than one narrower flag at a time: this app's
-    // whole UI is plain HTML/CSS with no need for GPU compositing anyway,
-    // so there's no real cost to always ruling GPU-path bugs out entirely.
+    // Blank white webview on Linux (reported first-hand on a Steam Deck):
+    // the native window and title bar come up fine, but nothing ever
+    // paints. Two GPU-acceleration workarounds (disabling WebKit's DMA-BUF
+    // renderer, then forcing fully software rendering) didn't touch it -
+    // running from a terminal on that same hardware got the real error
+    // underneath both of those attempts: "Could not create default EGL
+    // display: EGL_BAD_PARAMETER". That's GDK/WebKit failing to even open
+    // an EGL display at all, a step before hardware-vs-software rendering
+    // is ever chosen - which is exactly why neither previous fix could
+    // have worked, they were both one layer too high. This specific error
+    // is a known symptom of GDK picking the wrong windowing platform
+    // (native Wayland, on a system where its EGL support doesn't fully
+    // work) instead of the X11/XWayland path - forcing both GDK's own
+    // backend and Mesa's EGL platform to x11 is the standard fix.
+    // Software rendering is kept too since this UI has no need for GPU
+    // compositing regardless of whether it turns out to matter here.
     // All of this has to be set before the webview/GL context is created -
     // as early in the process as possible. Sound here: nothing has spawned
     // another thread yet at this point in startup, so there's no other
@@ -1482,6 +1488,8 @@ pub fn run() {
     // (env::set_var's actual safety requirement on Unix).
     #[cfg(target_os = "linux")]
     unsafe {
+        std::env::set_var("GDK_BACKEND", "x11");
+        std::env::set_var("EGL_PLATFORM", "x11");
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
         std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
         std::env::set_var("LIBGL_ALWAYS_SOFTWARE", "1");
