@@ -495,14 +495,58 @@ fn save_installed_mods(
     std::fs::write(installed_manifest_path(game_root), json).map_err(|e| e.to_string())
 }
 
+// What each client's launchable file is called inside the game folder, per
+// OS - the single source of truth for both launching one (the play_*
+// commands) and noticing one is already there (installed_status). On macOS
+// these are .app bundles, which are directories, so callers check .exists()
+// rather than assuming a plain file.
+fn client_binary_name(mod_id: &str) -> Option<&'static str> {
+    Some(match mod_id {
+        TOMMYTERNAL_MOD_ID => {
+            if cfg!(target_os = "windows") { "eternaljk2mvmp.exe" } else { "eternaljk2mvmp" }
+        }
+        OPENJO_MOD_ID => {
+            if cfg!(target_os = "macos") {
+                "openjo_sp.arm64.app"
+            } else if cfg!(target_os = "windows") {
+                "openjo_sp.x86_64.exe"
+            } else {
+                "openjo_sp.x86_64"
+            }
+        }
+        JK2MV_MOD_ID => {
+            if cfg!(target_os = "macos") {
+                "jk2mvmp.app"
+            } else if cfg!(target_os = "windows") {
+                "jk2mvmp.exe"
+            } else {
+                "jk2mvmp"
+            }
+        }
+        // Linux-only build, so no per-OS split to make here.
+        NWH_MOD_ID => "nwhmp",
+        _ => return None,
+    })
+}
+
 fn installed_status(mod_id: &str, game_root: &std::path::Path) -> InstalledStatus {
-    match load_installed_mods(game_root).get(mod_id) {
-        Some(record) if !record.paths.is_empty() => InstalledStatus {
-            installed: true,
-            version: Some(record.version.clone()),
-        },
-        _ => InstalledStatus { installed: false, version: None },
+    if let Some(record) = load_installed_mods(game_root).get(mod_id) {
+        if !record.paths.is_empty() {
+            return InstalledStatus { installed: true, version: Some(record.version.clone()) };
+        }
     }
+    // Nothing tracked - but the client's own executable may still be sitting
+    // right there. Someone who set the game up by hand, or who points the
+    // launcher at an existing standalone client folder (common for anyone
+    // whose copy of JK2 isn't a stock Steam install), has a perfectly good
+    // install this launcher simply didn't create, and reporting it as
+    // missing makes Play refuse to run something that works fine. Version is
+    // genuinely unknown here, which leaves Update offered - taking it is what
+    // brings the install under this launcher's tracking.
+    if client_binary_name(mod_id).is_some_and(|name| game_root.join(name).exists()) {
+        return InstalledStatus { installed: true, version: None };
+    }
+    InstalledStatus { installed: false, version: None }
 }
 
 // Climbs from `dir` up toward (not including) `stop_at`, removing each
@@ -784,7 +828,7 @@ fn uninstall_nwh(app: tauri::AppHandle) -> Result<String, String> {
 #[tauri::command]
 fn play_nwh(app: tauri::AppHandle, connect_address: Option<String>) -> Result<String, String> {
     let (_, game_root) = find_jk2_base_and_root(&app)?;
-    let binary = game_root.join("nwhmp");
+    let binary = game_root.join(client_binary_name(NWH_MOD_ID).unwrap());
     let mut cmd = std::process::Command::new(&binary);
     cmd.current_dir(&game_root);
     if client_has_pk3_mods(&game_root, NWH_MOD_ID) {
@@ -824,8 +868,7 @@ fn uninstall_tommyternal(app: tauri::AppHandle) -> Result<String, String> {
 #[tauri::command]
 fn play_tommyternal(app: tauri::AppHandle, connect_address: Option<String>) -> Result<String, String> {
     let (_, game_root) = find_jk2_base_and_root(&app)?;
-    let binary_name = if cfg!(target_os = "windows") { "eternaljk2mvmp.exe" } else { "eternaljk2mvmp" };
-    let binary = game_root.join(binary_name);
+    let binary = game_root.join(client_binary_name(TOMMYTERNAL_MOD_ID).unwrap());
     let mut cmd = std::process::Command::new(&binary);
     cmd.current_dir(&game_root);
     if client_has_pk3_mods(&game_root, TOMMYTERNAL_MOD_ID) {
@@ -962,7 +1005,7 @@ fn play_openjo(app: tauri::AppHandle) -> Result<String, String> {
     let (_, game_root) = find_jk2_base_and_root(&app)?;
 
     if cfg!(target_os = "macos") {
-        let app_bundle = game_root.join("openjo_sp.arm64.app");
+        let app_bundle = game_root.join(client_binary_name(OPENJO_MOD_ID).unwrap());
         let mut cmd = std::process::Command::new("open");
         cmd.arg(&app_bundle);
         if client_has_pk3_mods(&game_root, OPENJO_MOD_ID) {
@@ -975,8 +1018,7 @@ fn play_openjo(app: tauri::AppHandle) -> Result<String, String> {
     // Windows/Linux have no app-bundle concept - the binary is launched
     // directly, so unlike the "open --args" dance above, extra flags just
     // go straight on the command line.
-    let binary_name = if cfg!(target_os = "windows") { "openjo_sp.x86_64.exe" } else { "openjo_sp.x86_64" };
-    let binary = game_root.join(binary_name);
+    let binary = game_root.join(client_binary_name(OPENJO_MOD_ID).unwrap());
     let mut cmd = std::process::Command::new(&binary);
     cmd.current_dir(&game_root);
     if client_has_pk3_mods(&game_root, OPENJO_MOD_ID) {
@@ -1045,7 +1087,7 @@ fn play_jk2mv(app: tauri::AppHandle, connect_address: Option<String>) -> Result<
     }
 
     if cfg!(target_os = "macos") {
-        let app_bundle = game_root.join("jk2mvmp.app");
+        let app_bundle = game_root.join(client_binary_name(JK2MV_MOD_ID).unwrap());
         let mut cmd = std::process::Command::new("open");
         cmd.arg(&app_bundle);
         if !extra_args.is_empty() {
@@ -1056,8 +1098,7 @@ fn play_jk2mv(app: tauri::AppHandle, connect_address: Option<String>) -> Result<
         return Ok(format!("Launched {}", app_bundle.display()));
     }
 
-    let binary_name = if cfg!(target_os = "windows") { "jk2mvmp.exe" } else { "jk2mvmp" };
-    let binary = game_root.join(binary_name);
+    let binary = game_root.join(client_binary_name(JK2MV_MOD_ID).unwrap());
     let mut cmd = std::process::Command::new(&binary);
     cmd.current_dir(&game_root);
     cmd.args(&extra_args);
