@@ -1,5 +1,7 @@
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+#[cfg(target_os = "linux")]
+use std::os::unix::process::CommandExt;
 use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
 
@@ -1465,34 +1467,51 @@ async fn query_server_status(address: String) -> Result<ServerStatus, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Blank white webview on Linux (reported first-hand on a Steam Deck):
+    // Blank white webview on Linux (reported first-hand on a Steam Deck,
+    // confirmed a genuine Wayland session - XDG_SESSION_TYPE=wayland,
+    // WAYLAND_DISPLAY set, though XWayland's DISPLAY was also available):
     // the native window and title bar come up fine, but nothing ever
-    // paints. Two GPU-acceleration workarounds (disabling WebKit's DMA-BUF
-    // renderer, then forcing fully software rendering) didn't touch it -
-    // running from a terminal on that same hardware got the real error
-    // underneath both of those attempts: "Could not create default EGL
-    // display: EGL_BAD_PARAMETER". That's GDK/WebKit failing to even open
-    // an EGL display at all, a step before hardware-vs-software rendering
-    // is ever chosen - which is exactly why neither previous fix could
-    // have worked, they were both one layer too high. This specific error
-    // is a known symptom of GDK picking the wrong windowing platform
-    // (native Wayland, on a system where its EGL support doesn't fully
-    // work) instead of the X11/XWayland path - forcing both GDK's own
-    // backend and Mesa's EGL platform to x11 is the standard fix.
-    // Software rendering is kept too since this UI has no need for GPU
-    // compositing regardless of whether it turns out to matter here.
-    // All of this has to be set before the webview/GL context is created -
-    // as early in the process as possible. Sound here: nothing has spawned
-    // another thread yet at this point in startup, so there's no other
-    // thread that could be concurrently reading/writing the environment
-    // (env::set_var's actual safety requirement on Unix).
+    // paints, and the terminal shows "Could not create default EGL
+    // display: EGL_BAD_PARAMETER" - GDK/WebKit failing to even open an EGL
+    // display, before hardware-vs-software rendering is ever chosen.
+    //
+    // Setting GDK_BACKEND/EGL_PLATFORM to "x11" via env::set_var() from
+    // inside this already-running process had *zero* effect - byte-for-
+    // byte the same error, confirmed on that same real hardware. That's
+    // because GDK/EGL/Mesa read these during their own library
+    // initialization, which on Linux happens via the dynamic linker before
+    // main() (and everything in it) ever runs - too late for a program to
+    // change its own environment and have libraries it's already linked
+    // against notice. The standard fix is to re-exec: relaunch this same
+    // binary as a brand new process with the corrected environment already
+    // set, so the fresh process's dynamic linker and every library
+    // constructor see it from the very start. A guard var stops this from
+    // looping forever once the corrected environment is actually in place.
     #[cfg(target_os = "linux")]
-    unsafe {
-        std::env::set_var("GDK_BACKEND", "x11");
-        std::env::set_var("EGL_PLATFORM", "x11");
-        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
-        std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
-        std::env::set_var("LIBGL_ALWAYS_SOFTWARE", "1");
+    {
+        const RELAUNCH_GUARD: &str = "SORACLE_LINUX_ENV_APPLIED";
+        if std::env::var(RELAUNCH_GUARD).is_err() {
+            // Sound here (env::set_var's actual safety requirement on
+            // Unix): nothing has spawned another thread yet this early in
+            // startup, so nothing could be concurrently reading/writing
+            // the environment.
+            unsafe {
+                std::env::set_var("GDK_BACKEND", "x11");
+                std::env::set_var("EGL_PLATFORM", "x11");
+                std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+                std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+                std::env::set_var("LIBGL_ALWAYS_SOFTWARE", "1");
+                std::env::set_var(RELAUNCH_GUARD, "1");
+            }
+            if let Ok(exe) = std::env::current_exe() {
+                // exec() replaces this process's own image entirely (like C's
+                // execve) rather than spawning a child - it only returns at
+                // all if it failed to do that, in which case falling through
+                // to run normally (env fix not applied) beats exiting silently.
+                let err = std::process::Command::new(exe).args(std::env::args().skip(1)).exec();
+                eprintln!("Failed to re-exec with corrected environment: {err}");
+            }
+        }
     }
 
     tauri::Builder::default()
