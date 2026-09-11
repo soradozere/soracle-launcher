@@ -148,9 +148,27 @@ jobs:
           # in-app updater rejects this build on Linux.
           rm -f "$APPIMAGE.sig"
           pnpm tauri signer sign "$APPIMAGE"
-          jq --arg sig "$(cat "$APPIMAGE.sig")" \
-            '.platforms["linux-x86_64"].signature = $sig' latest.json > latest.json.new
+
+          gh release upload "$TAG" "$APPIMAGE" "$APPIMAGE.sig" \
+            --repo "$GITHUB_REPOSITORY" --clobber
+
+          # --clobber deletes and re-uploads, which mints a *new* asset id,
+          # so latest.json's baked-in URL now points at an asset that no
+          # longer exists - the updater would 404 on every Linux check.
+          # Re-read the id after uploading and rewrite the URL as well as the
+          # signature. Only the AppImage entries: deb/rpm are separate assets
+          # with their own signatures that this job never touched.
+          NEW_URL=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
+            -q ".assets[] | select(.name == \"$(basename "$APPIMAGE")\") | .apiUrl")
+          echo "republished AppImage url: $NEW_URL"
+
+          jq --arg sig "$(cat "$APPIMAGE.sig")" --arg url "$NEW_URL" '
+            .platforms |= (
+              (if has("linux-x86_64")
+                 then ."linux-x86_64" |= (.signature = $sig | .url = $url) else . end)
+              | (if has("linux-x86_64-appimage")
+                 then ."linux-x86_64-appimage" |= (.signature = $sig | .url = $url) else . end)
+            )' latest.json > latest.json.new
           mv latest.json.new latest.json
 
-          gh release upload "$TAG" "$APPIMAGE" "$APPIMAGE.sig" latest.json \
-            --repo "$GITHUB_REPOSITORY" --clobber
+          gh release upload "$TAG" latest.json --repo "$GITHUB_REPOSITORY" --clobber
