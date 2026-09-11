@@ -1501,6 +1501,18 @@ pub fn run() {
                 std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
                 std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
                 std::env::set_var("LIBGL_ALWAYS_SOFTWARE", "1");
+                // WebKitGTK renders actual page content in a separate,
+                // sandboxed subprocess - none of the renderer-choice vars
+                // above matter if that subprocess can't reach the GPU
+                // device at all inside its sandbox, which is exactly the
+                // kind of interaction AppImages (their own FUSE mount
+                // layered under WebKit's own bubblewrap sandboxing) are
+                // known to trip over. Confirmed real on the actual Steam
+                // Deck this bug was found on: none of the vars above
+                // changed the error even once genuinely applied (verified
+                // via re-exec) - this disables that sandbox entirely
+                // instead of changing what happens inside it.
+                std::env::set_var("WEBKIT_FORCE_SANDBOX", "0");
                 std::env::set_var(RELAUNCH_GUARD, "1");
             }
             if let Ok(exe) = std::env::current_exe() {
