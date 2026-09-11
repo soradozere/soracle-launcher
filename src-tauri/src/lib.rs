@@ -1,7 +1,5 @@
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
-#[cfg(target_os = "linux")]
-use std::os::unix::process::CommandExt;
 use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
 
@@ -1467,64 +1465,21 @@ async fn query_server_status(address: String) -> Result<ServerStatus, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Blank white webview on Linux (reported first-hand on a Steam Deck,
-    // confirmed a genuine Wayland session - XDG_SESSION_TYPE=wayland,
-    // WAYLAND_DISPLAY set, though XWayland's DISPLAY was also available):
-    // the native window and title bar come up fine, but nothing ever
-    // paints, and the terminal shows "Could not create default EGL
-    // display: EGL_BAD_PARAMETER" - GDK/WebKit failing to even open an EGL
-    // display, before hardware-vs-software rendering is ever chosen.
+    // The blank-white-window bug on Linux (window opens, never paints a
+    // pixel, "Could not create default EGL display: EGL_BAD_PARAMETER" on
+    // stderr) turned out to be the AppImage bundling Ubuntu 22.04's own
+    // libwayland-*, which shadowed the host's newer ones and broke Mesa's
+    // EGL setup. It's fixed where it actually lives - the release workflow
+    // strips those libs so the host's are used (see patch-appimage in
+    // .github/workflows/release.yml).
     //
-    // Setting GDK_BACKEND/EGL_PLATFORM to "x11" via env::set_var() from
-    // inside this already-running process had *zero* effect - byte-for-
-    // byte the same error, confirmed on that same real hardware. That's
-    // because GDK/EGL/Mesa read these during their own library
-    // initialization, which on Linux happens via the dynamic linker before
-    // main() (and everything in it) ever runs - too late for a program to
-    // change its own environment and have libraries it's already linked
-    // against notice. The standard fix is to re-exec: relaunch this same
-    // binary as a brand new process with the corrected environment already
-    // set, so the fresh process's dynamic linker and every library
-    // constructor see it from the very start. A guard var stops this from
-    // looping forever once the corrected environment is actually in place.
-    #[cfg(target_os = "linux")]
-    {
-        const RELAUNCH_GUARD: &str = "SORACLE_LINUX_ENV_APPLIED";
-        if std::env::var(RELAUNCH_GUARD).is_err() {
-            // Sound here (env::set_var's actual safety requirement on
-            // Unix): nothing has spawned another thread yet this early in
-            // startup, so nothing could be concurrently reading/writing
-            // the environment.
-            unsafe {
-                std::env::set_var("GDK_BACKEND", "x11");
-                std::env::set_var("EGL_PLATFORM", "x11");
-                std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
-                std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
-                std::env::set_var("LIBGL_ALWAYS_SOFTWARE", "1");
-                // WebKitGTK renders actual page content in a separate,
-                // sandboxed subprocess - none of the renderer-choice vars
-                // above matter if that subprocess can't reach the GPU
-                // device at all inside its sandbox, which is exactly the
-                // kind of interaction AppImages (their own FUSE mount
-                // layered under WebKit's own bubblewrap sandboxing) are
-                // known to trip over. Confirmed real on the actual Steam
-                // Deck this bug was found on: none of the vars above
-                // changed the error even once genuinely applied (verified
-                // via re-exec) - this disables that sandbox entirely
-                // instead of changing what happens inside it.
-                std::env::set_var("WEBKIT_FORCE_SANDBOX", "0");
-                std::env::set_var(RELAUNCH_GUARD, "1");
-            }
-            if let Ok(exe) = std::env::current_exe() {
-                // exec() replaces this process's own image entirely (like C's
-                // execve) rather than spawning a child - it only returns at
-                // all if it failed to do that, in which case falling through
-                // to run normally (env fix not applied) beats exiting silently.
-                let err = std::process::Command::new(exe).args(std::env::args().skip(1)).exec();
-                eprintln!("Failed to re-exec with corrected environment: {err}");
-            }
-        }
-    }
+    // Five env-var workarounds were tried here first and every one of them
+    // was dead on arrival: WebKitGTK initialises EGL before it reads any of
+    // them. They're deliberately gone rather than left in "just in case" -
+    // LIBGL_ALWAYS_SOFTWARE in particular forced every pixel through the
+    // CPU, which is real, measurable lag on a Steam Deck, and GDK_BACKEND=x11
+    // gave up native Wayland for XWayland. Nothing to trade for a fix they
+    // never provided.
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())

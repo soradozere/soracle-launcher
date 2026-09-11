@@ -61,3 +61,96 @@ jobs:
           releaseBody: "See the assets below to download this version. Existing installs can also update in-app via Check for Updates."
           releaseDraft: true
           prerelease: false
+
+  # linuxdeploy's GTK plugin bundles Ubuntu 22.04's own libwayland-* into the
+  # AppImage. On any host whose Mesa is newer than the build image's - a Steam
+  # Deck, confirmed first-hand - those older bundled copies shadow the
+  # system's via LD_LIBRARY_PATH and EGL display creation fails outright
+  # ("Could not create default EGL display: EGL_BAD_PARAMETER"), leaving a
+  # window that opens but never paints a single pixel. No runtime environment
+  # variable fixes it: WebKitGTK initialises EGL before reading any of them,
+  # which is why five separate attempts at that (DMA-BUF, compositing mode,
+  # software GL, GDK backend, EGL platform) all changed nothing. Stripping the
+  # libs so the host's own are used is the documented remedy, and is verified
+  # working on the Deck this was found on.
+  #
+  # Runs as its own job after every matrix build rather than inside the Linux
+  # one, so it can't race the macOS/Windows jobs also writing latest.json.
+  patch-appimage:
+    needs: release
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11
+
+      - name: Install frontend dependencies
+        run: pnpm install
+
+      - name: Strip bundled Wayland libs, re-sign, and republish
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y squashfs-tools jq
+
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern '*.AppImage' --pattern 'latest.json' --clobber
+          APPIMAGE=$(ls ./*.AppImage)
+          echo "Patching $APPIMAGE"
+
+          # The AppImage is its runtime ELF with a squashfs appended. The
+          # runtime's own --appimage-offset isn't implemented in every build,
+          # so find the real superblock by validating candidates instead of
+          # trusting the first "hsqs" byte sequence in the file (there are
+          # coincidental matches inside the runtime itself).
+          OFFSET=$(python3 - "$APPIMAGE" <<'PY'
+          import struct, sys
+          data = open(sys.argv[1], 'rb').read(4_000_000)
+          start = 0
+          while True:
+              off = data.find(b'hsqs', start)
+              if off == -1:
+                  sys.exit('no valid squashfs superblock found')
+              try:
+                  _, _, bsize, _, comp, blog = struct.unpack_from('<IIIIHH', data, off + 4)
+                  if (1 << blog) == bsize and 4096 <= bsize <= 1048576 and 1 <= comp <= 6:
+                      print(off)
+                      break
+              except struct.error:
+                  pass
+              start = off + 1
+          PY
+          )
+          echo "squashfs offset: $OFFSET"
+
+          unsquashfs -o "$OFFSET" -d appdir "$APPIMAGE"
+          rm -fv appdir/usr/lib/libwayland-*
+          mksquashfs appdir payload.squashfs -comp zstd -b 131072 -noappend -no-progress
+          head -c "$OFFSET" "$APPIMAGE" > runtime.bin
+          cat runtime.bin payload.squashfs > patched.AppImage
+          chmod +x patched.AppImage
+          mv patched.AppImage "$APPIMAGE"
+
+          # The old .sig covers the pre-patch bytes, so re-sign or the
+          # in-app updater rejects this build on Linux.
+          rm -f "$APPIMAGE.sig"
+          pnpm tauri signer sign "$APPIMAGE"
+          jq --arg sig "$(cat "$APPIMAGE.sig")" \
+            '.platforms["linux-x86_64"].signature = $sig' latest.json > latest.json.new
+          mv latest.json.new latest.json
+
+          gh release upload "$TAG" "$APPIMAGE" "$APPIMAGE.sig" latest.json \
+            --repo "$GITHUB_REPOSITORY" --clobber
