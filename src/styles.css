@@ -1569,3 +1569,46 @@ button.change-folder:hover {
 .confirm-ok-btn.danger:hover {
   background: #d94a4a;
 }
+
+/* Per-client game folder row (client detail view) */
+
+.client-folder-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin: 0.9rem 0 0;
+  font-size: 0.75rem;
+}
+
+.client-folder-label {
+  flex-shrink: 0;
+  color: var(--text-dim);
+  font-family: "SF Mono", ui-monospace, Menlo, monospace;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.client-folder-path {
+  min-width: 0;
+  max-width: 46%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* Plain end-truncation. The direction:rtl trick that keeps a path's tail
+     visible reorders its leading slash to the end, and cancelling that with
+     unicode-bidi:plaintext cancels the truncation side too - not worth a
+     misleading path for. The full path is on the title attribute. */
+  color: var(--text);
+}
+
+.client-folder-tag {
+  flex-shrink: 0;
+  font-size: 0.64rem;
+  color: var(--text-dim);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.1rem 0.45rem;
+}

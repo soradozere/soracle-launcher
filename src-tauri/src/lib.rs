@@ -315,25 +315,73 @@ fn folder_override_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, St
     Ok(app_data.join("game_folder_override.json"))
 }
 
-fn load_folder_override(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
-    let path = folder_override_path(app).ok()?;
-    let contents = std::fs::read_to_string(path).ok()?;
-    let value: serde_json::Value = serde_json::from_str(&contents).ok()?;
-    let dir = std::path::PathBuf::from(value.get("path")?.as_str()?);
-    dir.is_dir().then_some(dir)
+// The override document:
+//   { "path": "<default for every client>",
+//     "clients": { "<mod_id>": "<that client's own folder>" } }
+//
+// "path" alone is the original single-folder shape and is still read as the
+// default, so an existing install keeps working untouched. Per-client entries
+// exist because a client doesn't have to live beside the others: someone
+// without a stock Steam install can perfectly well keep a separate, complete
+// game folder per client (reported first-hand - one each for Tommyternal,
+// EternalJK and NWH), and a single global path can only ever point at one of
+// them.
+fn load_override_doc(app: &tauri::AppHandle) -> serde_json::Value {
+    folder_override_path(app)
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}))
 }
 
-fn save_folder_override(app: &tauri::AppHandle, dir: &std::path::Path) -> Result<(), String> {
+// `mod_id` None asks for the default folder; Some(id) prefers that client's
+// own folder and falls back to the default when it hasn't got one.
+fn load_folder_override(app: &tauri::AppHandle, mod_id: Option<&str>) -> Option<std::path::PathBuf> {
+    let doc = load_override_doc(app);
+    let per_client = mod_id
+        .and_then(|id| doc.get("clients")?.get(id)?.as_str().map(std::path::PathBuf::from))
+        .filter(|d| d.is_dir());
+    per_client.or_else(|| {
+        let dir = std::path::PathBuf::from(doc.get("path")?.as_str()?);
+        dir.is_dir().then_some(dir)
+    })
+}
+
+fn save_folder_override(
+    app: &tauri::AppHandle,
+    mod_id: Option<&str>,
+    dir: &std::path::Path,
+) -> Result<(), String> {
     let path = folder_override_path(app)?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    let value = serde_json::json!({ "path": dir.to_string_lossy() });
-    std::fs::write(path, serde_json::to_string_pretty(&value).unwrap()).map_err(|e| e.to_string())
+    // Read-modify-write: setting one client's folder must not drop the
+    // default or any other client's.
+    let mut doc = load_override_doc(app);
+    match mod_id {
+        Some(id) => {
+            if !doc.get("clients").is_some_and(|c| c.is_object()) {
+                doc["clients"] = serde_json::json!({});
+            }
+            doc["clients"][id] = serde_json::json!(dir.to_string_lossy());
+        }
+        None => doc["path"] = serde_json::json!(dir.to_string_lossy()),
+    }
+    std::fs::write(path, serde_json::to_string_pretty(&doc).unwrap()).map_err(|e| e.to_string())
 }
 
-fn find_jk2_install(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    if let Some(dir) = load_folder_override(app) {
+fn clear_folder_override(app: &tauri::AppHandle, mod_id: &str) -> Result<(), String> {
+    let path = folder_override_path(app)?;
+    let mut doc = load_override_doc(app);
+    if let Some(clients) = doc.get_mut("clients").and_then(|c| c.as_object_mut()) {
+        clients.remove(mod_id);
+    }
+    std::fs::write(path, serde_json::to_string_pretty(&doc).unwrap()).map_err(|e| e.to_string())
+}
+
+fn find_jk2_install(app: &tauri::AppHandle, mod_id: Option<&str>) -> Result<std::path::PathBuf, String> {
+    if let Some(dir) = load_folder_override(app, mod_id) {
         return Ok(dir);
     }
     let steam_dir = steamlocate::locate().map_err(|e| format!("Steam not found: {e}"))?;
@@ -346,26 +394,52 @@ fn find_jk2_install(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String
 
 #[tauri::command]
 fn locate_jk2(app: tauri::AppHandle) -> Result<String, String> {
-    let install_root = find_jk2_install(&app)?;
+    let install_root = find_jk2_install(&app, None)?;
     Ok(format!("Found Jedi Knight II at {}", install_root.display()))
 }
 
 #[tauri::command]
 fn get_game_folder_override(app: tauri::AppHandle) -> Option<String> {
-    load_folder_override(&app).map(|p| p.to_string_lossy().to_string())
+    load_folder_override(&app, None).map(|p| p.to_string_lossy().to_string())
+}
+
+// What a given client will actually use, and whether that's its own folder
+// or just the shared default - the UI shows the difference so "which copy of
+// the game is this going to touch" is never a guess.
+#[derive(serde::Serialize)]
+struct ClientFolder {
+    path: Option<String>,
+    is_own: bool,
 }
 
 #[tauri::command]
-async fn pick_game_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    // Same crash as pick_pk3_files used to hit: blocking_pick_folder's own
-    // docs say not to call it on the main thread - this command was missed
-    // when that fix went in for the PK3 picker.
-    let picked = app
-        .dialog()
-        .file()
-        .set_title("Select your Jedi Knight II install folder")
-        .blocking_pick_folder();
+fn get_client_folder(app: tauri::AppHandle, mod_id: String) -> ClientFolder {
+    let doc = load_override_doc(&app);
+    let own = doc
+        .get("clients")
+        .and_then(|c| c.get(&mod_id))
+        .and_then(|p| p.as_str())
+        .map(std::path::PathBuf::from)
+        .filter(|d| d.is_dir());
+    match own {
+        Some(dir) => ClientFolder { path: Some(dir.to_string_lossy().to_string()), is_own: true },
+        None => ClientFolder {
+            path: find_jk2_install(&app, None).ok().map(|p| p.to_string_lossy().to_string()),
+            is_own: false,
+        },
+    }
+}
 
+#[tauri::command]
+fn clear_client_folder(app: tauri::AppHandle, mod_id: String) -> Result<(), String> {
+    clear_folder_override(&app, &mod_id)
+}
+
+// blocking_pick_folder's own docs say not to call it on the main thread - an
+// async command runs on a worker instead, which is what stopped this
+// crashing (the same fix pick_pk3_files needed).
+async fn pick_folder_into(app: &tauri::AppHandle, mod_id: Option<&str>, title: &str) -> Result<Option<String>, String> {
+    let picked = app.dialog().file().set_title(title).blocking_pick_folder();
     let Some(file_path) = picked else {
         return Ok(None);
     };
@@ -373,8 +447,18 @@ async fn pick_game_folder(app: tauri::AppHandle) -> Result<Option<String>, Strin
     // Validate before accepting - refuse a folder that doesn't actually resolve
     // to a base/ dir, same shape Steam's own auto-detection guarantees.
     find_base_dir(&dir)?;
-    save_folder_override(&app, &dir)?;
+    save_folder_override(app, mod_id, &dir)?;
     Ok(Some(dir.to_string_lossy().to_string()))
+}
+
+#[tauri::command]
+async fn pick_game_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    pick_folder_into(&app, None, "Select your Jedi Knight II install folder").await
+}
+
+#[tauri::command]
+async fn pick_client_folder(app: tauri::AppHandle, mod_id: String) -> Result<Option<String>, String> {
+    pick_folder_into(&app, Some(&mod_id), "Select this client's own game folder").await
 }
 
 fn find_base_dir(install_root: &std::path::Path) -> Result<std::path::PathBuf, String> {
@@ -407,7 +491,7 @@ fn find_base_dir(install_root: &std::path::Path) -> Result<std::path::PathBuf, S
 
 #[tauri::command]
 fn locate_jk2_base(app: tauri::AppHandle) -> Result<String, String> {
-    let install_root = find_jk2_install(&app)?;
+    let install_root = find_jk2_install(&app, None)?;
     let base_dir = find_base_dir(&install_root)?;
     Ok(format!("Found base folder at {}", base_dir.display()))
 }
@@ -776,8 +860,9 @@ fn list_files_recursive(dir: &std::path::Path) -> Result<Vec<std::path::PathBuf>
 
 fn find_jk2_base_and_root(
     app: &tauri::AppHandle,
+    mod_id: Option<&str>,
 ) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
-    let install_root = find_jk2_install(app)?;
+    let install_root = find_jk2_install(app, mod_id)?;
     let base_dir = find_base_dir(&install_root)?;
     let game_root = base_dir
         .parent()
@@ -793,7 +878,7 @@ fn resolve_nwh_install(
 ) -> Result<(std::path::PathBuf, std::path::PathBuf, std::path::PathBuf), String> {
     let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let payload_dir = find_single_subdir(&app_data.join("extracted").join("nwh"))?;
-    let (base_dir, game_root) = find_jk2_base_and_root(app)?;
+    let (base_dir, game_root) = find_jk2_base_and_root(app, Some(NWH_MOD_ID))?;
     Ok((payload_dir, base_dir, game_root))
 }
 
@@ -811,13 +896,13 @@ fn install_nwh(app: tauri::AppHandle, version: String) -> Result<String, String>
 
 #[tauri::command]
 fn is_nwh_installed(app: tauri::AppHandle) -> Result<InstalledStatus, String> {
-    let (_, game_root) = find_jk2_base_and_root(&app)?;
+    let (_, game_root) = find_jk2_base_and_root(&app, Some(NWH_MOD_ID))?;
     Ok(installed_status(NWH_MOD_ID, &game_root))
 }
 
 #[tauri::command]
 fn uninstall_nwh(app: tauri::AppHandle) -> Result<String, String> {
-    let (_, game_root) = find_jk2_base_and_root(&app)?;
+    let (_, game_root) = find_jk2_base_and_root(&app, Some(NWH_MOD_ID))?;
     uninstall_mod(NWH_MOD_ID, &game_root)
 }
 
@@ -827,7 +912,7 @@ fn uninstall_nwh(app: tauri::AppHandle) -> Result<String, String> {
 // "linux" (see modSupportedOnCurrentPlatform in main.js).
 #[tauri::command]
 fn play_nwh(app: tauri::AppHandle, connect_address: Option<String>) -> Result<String, String> {
-    let (_, game_root) = find_jk2_base_and_root(&app)?;
+    let (_, game_root) = find_jk2_base_and_root(&app, Some(NWH_MOD_ID))?;
     let binary = game_root.join(client_binary_name(NWH_MOD_ID).unwrap());
     let mut cmd = std::process::Command::new(&binary);
     cmd.current_dir(&game_root);
@@ -849,25 +934,25 @@ fn resolve_tommyternal_install(
 ) -> Result<(std::path::PathBuf, std::path::PathBuf, std::path::PathBuf), String> {
     let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let payload_dir = find_single_subdir(&app_data.join("extracted").join("tommyternal"))?;
-    let (base_dir, game_root) = find_jk2_base_and_root(app)?;
+    let (base_dir, game_root) = find_jk2_base_and_root(app, Some(TOMMYTERNAL_MOD_ID))?;
     Ok((payload_dir, base_dir, game_root))
 }
 
 #[tauri::command]
 fn is_tommyternal_installed(app: tauri::AppHandle) -> Result<InstalledStatus, String> {
-    let (_, game_root) = find_jk2_base_and_root(&app)?;
+    let (_, game_root) = find_jk2_base_and_root(&app, Some(TOMMYTERNAL_MOD_ID))?;
     Ok(installed_status(TOMMYTERNAL_MOD_ID, &game_root))
 }
 
 #[tauri::command]
 fn uninstall_tommyternal(app: tauri::AppHandle) -> Result<String, String> {
-    let (_, game_root) = find_jk2_base_and_root(&app)?;
+    let (_, game_root) = find_jk2_base_and_root(&app, Some(TOMMYTERNAL_MOD_ID))?;
     uninstall_mod(TOMMYTERNAL_MOD_ID, &game_root)
 }
 
 #[tauri::command]
 fn play_tommyternal(app: tauri::AppHandle, connect_address: Option<String>) -> Result<String, String> {
-    let (_, game_root) = find_jk2_base_and_root(&app)?;
+    let (_, game_root) = find_jk2_base_and_root(&app, Some(TOMMYTERNAL_MOD_ID))?;
     let binary = game_root.join(client_binary_name(TOMMYTERNAL_MOD_ID).unwrap());
     let mut cmd = std::process::Command::new(&binary);
     cmd.current_dir(&game_root);
@@ -971,7 +1056,7 @@ fn resolve_openjo_install(
 ) -> Result<(std::path::PathBuf, std::path::PathBuf, std::path::PathBuf), String> {
     let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let payload_dir = app_data.join("extracted").join("openjo");
-    let (base_dir, game_root) = find_jk2_base_and_root(app)?;
+    let (base_dir, game_root) = find_jk2_base_and_root(app, Some(OPENJO_MOD_ID))?;
     Ok((payload_dir, base_dir, game_root))
 }
 
@@ -989,20 +1074,20 @@ fn install_openjo(app: tauri::AppHandle, version: String) -> Result<String, Stri
 
 #[tauri::command]
 fn is_openjo_installed(app: tauri::AppHandle) -> Result<InstalledStatus, String> {
-    let (_, game_root) = find_jk2_base_and_root(&app)?;
+    let (_, game_root) = find_jk2_base_and_root(&app, Some(OPENJO_MOD_ID))?;
     Ok(installed_status(OPENJO_MOD_ID, &game_root))
 }
 
 #[tauri::command]
 fn uninstall_openjo(app: tauri::AppHandle) -> Result<String, String> {
-    let (_, game_root) = find_jk2_base_and_root(&app)?;
+    let (_, game_root) = find_jk2_base_and_root(&app, Some(OPENJO_MOD_ID))?;
     uninstall_mod(OPENJO_MOD_ID, &game_root)
 }
 
 #[tauri::command]
 fn play_openjo(app: tauri::AppHandle) -> Result<String, String> {
     // Single-player only - no +connect support here (see manifest description).
-    let (_, game_root) = find_jk2_base_and_root(&app)?;
+    let (_, game_root) = find_jk2_base_and_root(&app, Some(OPENJO_MOD_ID))?;
 
     if cfg!(target_os = "macos") {
         let app_bundle = game_root.join(client_binary_name(OPENJO_MOD_ID).unwrap());
@@ -1038,7 +1123,7 @@ fn resolve_jk2mv_install(
 ) -> Result<(std::path::PathBuf, std::path::PathBuf, std::path::PathBuf), String> {
     let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let payload_dir = app_data.join("extracted").join("jk2mv");
-    let (base_dir, game_root) = find_jk2_base_and_root(app)?;
+    let (base_dir, game_root) = find_jk2_base_and_root(app, Some(JK2MV_MOD_ID))?;
     Ok((payload_dir, base_dir, game_root))
 }
 
@@ -1056,19 +1141,19 @@ fn install_jk2mv(app: tauri::AppHandle, version: String) -> Result<String, Strin
 
 #[tauri::command]
 fn is_jk2mv_installed(app: tauri::AppHandle) -> Result<InstalledStatus, String> {
-    let (_, game_root) = find_jk2_base_and_root(&app)?;
+    let (_, game_root) = find_jk2_base_and_root(&app, Some(JK2MV_MOD_ID))?;
     Ok(installed_status(JK2MV_MOD_ID, &game_root))
 }
 
 #[tauri::command]
 fn uninstall_jk2mv(app: tauri::AppHandle) -> Result<String, String> {
-    let (_, game_root) = find_jk2_base_and_root(&app)?;
+    let (_, game_root) = find_jk2_base_and_root(&app, Some(JK2MV_MOD_ID))?;
     uninstall_mod(JK2MV_MOD_ID, &game_root)
 }
 
 #[tauri::command]
 fn play_jk2mv(app: tauri::AppHandle, connect_address: Option<String>) -> Result<String, String> {
-    let (_, game_root) = find_jk2_base_and_root(&app)?;
+    let (_, game_root) = find_jk2_base_and_root(&app, Some(JK2MV_MOD_ID))?;
 
     // `open --args` only accepts one --args flag - everything after it is
     // passed straight through to the app, so both +set and +connect (when
@@ -1281,7 +1366,7 @@ fn reconcile_pk3_mods_with_disk(
 
 #[tauri::command]
 fn list_pk3_mods(app: tauri::AppHandle) -> Result<Vec<Pk3Mod>, String> {
-    let (base_dir, game_root) = find_jk2_base_and_root(&app)?;
+    let (base_dir, game_root) = find_jk2_base_and_root(&app, None)?;
     let mut mods = load_pk3_mods(&game_root);
     reconcile_pk3_mods_with_disk(&app, &base_dir, &game_root, &mut mods)?;
     save_pk3_mods(&game_root, &mods)?;
@@ -1325,7 +1410,7 @@ fn add_pk3_mod_from_path(app: &tauri::AppHandle, source: &std::path::Path) -> Re
     std::fs::create_dir_all(&library_dir).map_err(|e| e.to_string())?;
     std::fs::copy(source, library_dir.join(&filename)).map_err(|e| e.to_string())?;
 
-    let (_, game_root) = find_jk2_base_and_root(app)?;
+    let (_, game_root) = find_jk2_base_and_root(app, None)?;
     let mut mods = load_pk3_mods(&game_root);
     if !mods.iter().any(|m| m.filename == filename) {
         mods.push(Pk3Mod { filename: filename.clone(), targets: Vec::new() });
@@ -1361,7 +1446,7 @@ fn set_pk3_mod_targets(app: tauri::AppHandle, filename: String, targets: Vec<Str
         }
     }
 
-    let (base_dir, game_root) = find_jk2_base_and_root(&app)?;
+    let (base_dir, game_root) = find_jk2_base_and_root(&app, None)?;
     let library_path = pk3_library_dir(&app)?.join(&filename);
     if !library_path.exists() {
         return Err(format!("{filename} is not in the mod library"));
@@ -1381,7 +1466,7 @@ fn set_pk3_mod_targets(app: tauri::AppHandle, filename: String, targets: Vec<Str
 
 #[tauri::command]
 fn remove_pk3_mod(app: tauri::AppHandle, filename: String) -> Result<(), String> {
-    let (base_dir, game_root) = find_jk2_base_and_root(&app)?;
+    let (base_dir, game_root) = find_jk2_base_and_root(&app, None)?;
     let mut mods = load_pk3_mods(&game_root);
     if let Some(entry) = mods.iter().find(|m| m.filename == filename) {
         undeploy_pk3_from_targets(&base_dir, &game_root, &filename, &entry.targets)?;
@@ -1539,6 +1624,9 @@ pub fn run() {
             locate_jk2_base,
             get_game_folder_override,
             pick_game_folder,
+            get_client_folder,
+            pick_client_folder,
+            clear_client_folder,
             preview_install_nwh,
             install_nwh,
             is_nwh_installed,

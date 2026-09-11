@@ -7,6 +7,7 @@ const STEAM_STORE_URL = "https://store.steampowered.com/app/6030/STAR_WARS_Jedi_
 // extract_* Rust command expects to find under AppData (see lib.rs).
 const MOD_HANDLERS = {
   TommyternalJK2MV: {
+    modId: "tommyternal",
     filenames: {
       macos: "tommyternal_macos_arm64.zip",
       windows: "tommyternal_windows_x64.zip",
@@ -19,6 +20,7 @@ const MOD_HANDLERS = {
     uninstallCommand: "uninstall_tommyternal",
   },
   OpenJO: {
+    modId: "openjo",
     filenames: {
       macos: "openjo_macos_arm64.tar.gz",
       windows: "openjo_windows_x64.zip",
@@ -31,6 +33,7 @@ const MOD_HANDLERS = {
     uninstallCommand: "uninstall_openjo",
   },
   JK2MV: {
+    modId: "jk2mv",
     filenames: {
       macos: "jk2mv_macos_x86_64.dmg",
       windows: "jk2mv_windows_x64.zip",
@@ -46,6 +49,7 @@ const MOD_HANDLERS = {
   // `platforms` restricts which OS this client is even offered on, unlike
   // the other three above, which install everywhere and so never need it.
   NWH: {
+    modId: "nwh",
     filenames: {
       linux: "nwh_linux_x64.tar.gz",
     },
@@ -129,6 +133,55 @@ const statsCache = {}; // player name -> stats data, null (not found), or { erro
 
 let pk3Mods = null; // list from list_pk3_mods, or null while loading
 let pk3ModsError = null;
+
+// Which game folder each client resolves to, and whether that's a folder
+// set for this client specifically or the shared default. Clients don't
+// have to live together: a setup with no Steam install at all can have one
+// complete game folder per client, which a single global path can't express.
+const clientFolders = {}; // client name -> { path, is_own }, or undefined while loading
+
+async function loadClientFolder(name) {
+  const modId = MOD_HANDLERS[name]?.modId;
+  if (!modId) return;
+  try {
+    clientFolders[name] = await window.__TAURI__.core.invoke("get_client_folder", { modId });
+  } catch (err) {
+    clientFolders[name] = { path: null, is_own: false };
+    console.error("Failed to read client folder:", err);
+  }
+  if (selected === name) renderMain();
+}
+
+// Picking a folder for one client leaves every other client - and the
+// shared default - exactly as they were. Re-checks install state after,
+// since "is this installed" is answered relative to whichever folder the
+// client now points at.
+async function setClientFolder(name) {
+  const modId = MOD_HANDLERS[name]?.modId;
+  if (!modId) return;
+  try {
+    const picked = await window.__TAURI__.core.invoke("pick_client_folder", { modId });
+    if (picked === null) return; // cancelled
+    clientFolders[name] = { path: picked, is_own: true };
+    await refreshModStates();
+  } catch (err) {
+    modState[name] = { ...modState[name], message: `Error: ${err}` };
+    renderMain();
+  }
+}
+
+async function resetClientFolder(name) {
+  const modId = MOD_HANDLERS[name]?.modId;
+  if (!modId) return;
+  try {
+    await window.__TAURI__.core.invoke("clear_client_folder", { modId });
+    clientFolders[name] = undefined;
+    await refreshModStates();
+  } catch (err) {
+    modState[name] = { ...modState[name], message: `Error: ${err}` };
+    renderMain();
+  }
+}
 
 const serverStatusCache = {}; // address -> ServerStatus, undefined while loading, or { error }
 const serverJoinMessage = {}; // address -> status text shown under that server's card
@@ -1357,6 +1410,27 @@ function renderMain() {
       actions += `<a class="profile-link" href="${SORACLE_BASE}" target="_blank" rel="noopener">JK2 CTF</a>`;
     }
   }
+  // Which copy of the game this client will actually touch. Only shown for
+  // clients this platform can install at all - there's nothing to point at
+  // otherwise.
+  let folderHtml = "";
+  if (handler && modSupportedOnCurrentPlatform(mod.name)) {
+    const folder = clientFolders[mod.name];
+    if (folder === undefined) {
+      loadClientFolder(mod.name);
+      folderHtml = `<p class="client-folder-row"><span class="client-folder-label">Game folder</span> <span class="detail-status">Checking...</span></p>`;
+    } else {
+      const shown = folder.path ?? "Not found";
+      folderHtml = `
+        <p class="client-folder-row">
+          <span class="client-folder-label">Game folder</span>
+          <span class="client-folder-path" title="${shown}">${shown}</span>
+          <span class="client-folder-tag">${folder.is_own ? "this client only" : "shared default"}</span>
+          <button class="change-folder" data-pick-client-folder="${mod.name}">Change...</button>
+          ${folder.is_own ? `<button class="change-folder" data-clear-client-folder="${mod.name}">Use default</button>` : ""}
+        </p>`;
+    }
+  }
   const banner = `<img class="detail-banner" src="assets/banners/${mod.name.toLowerCase()}.jpg" alt="" onerror="this.remove()">`;
   const repo = githubRepoFromUrl(mod.sourceUrl);
   const releaseHtml = repo ? renderReleaseNotesBlock(mod, repo) : "";
@@ -1373,6 +1447,7 @@ function renderMain() {
     <p class="detail-description">${mod.description ?? ""}</p>
     <div class="detail-actions">${actions}</div>
     <p class="detail-status">${state.message ?? ""}</p>
+    ${folderHtml}
     ${statsHtml}
     ${releaseHtml}
     ${sourceHtml}
@@ -1604,6 +1679,16 @@ document.getElementById("main").addEventListener("click", (e) => {
   const btn = e.target.closest("button[data-action]");
   if (btn) {
     handleAction(selected, btn.dataset.action);
+    return;
+  }
+  const pickFolderBtn = e.target.closest("button[data-pick-client-folder]");
+  if (pickFolderBtn) {
+    setClientFolder(pickFolderBtn.dataset.pickClientFolder);
+    return;
+  }
+  const clearFolderBtn = e.target.closest("button[data-clear-client-folder]");
+  if (clearFolderBtn) {
+    resetClientFolder(clearFolderBtn.dataset.clearClientFolder);
     return;
   }
   const pinnedPlayBtn = e.target.closest("[data-pinned-play]");
