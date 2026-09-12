@@ -138,7 +138,15 @@ jobs:
 
           unsquashfs -o "$OFFSET" -d appdir "$APPIMAGE"
           rm -fv appdir/usr/lib/libwayland-*
-          mksquashfs appdir payload.squashfs -comp zstd -b 131072 -noappend -no-progress
+          # Since we're repacking anyway, do it at zstd's maximum level with
+          # larger blocks: ~8% off the download (80.4MB -> 73.5MB measured)
+          # for about six seconds of CI time. zstd's *decompression* speed
+          # doesn't vary with compression level, and an AppImage decompresses
+          # its squashfs lazily as it runs, so this costs nothing at runtime.
+          # xz would reach ~67MB but decompresses far slower, which would show
+          # up as slower startup every launch - not worth 6MB.
+          mksquashfs appdir payload.squashfs -comp zstd -Xcompression-level 22 \
+            -b 1048576 -noappend -no-progress
           head -c "$OFFSET" "$APPIMAGE" > runtime.bin
           cat runtime.bin payload.squashfs > patched.AppImage
           chmod +x patched.AppImage
