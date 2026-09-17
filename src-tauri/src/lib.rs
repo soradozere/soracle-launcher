@@ -1250,7 +1250,8 @@ fn play_jk2mv(app: tauri::AppHandle, connect_address: Option<String>) -> Result<
 // file - these are user-added content PK3s (maps, skins, etc.), tracked
 // separately from the client-install system above.
 
-const PK3_CLIENT_IDS: [&str; 3] = [TOMMYTERNAL_MOD_ID, OPENJO_MOD_ID, JK2MV_MOD_ID];
+const PK3_CLIENT_IDS: [&str; 4] =
+    [TOMMYTERNAL_MOD_ID, OPENJO_MOD_ID, JK2MV_MOD_ID, NWH_MOD_ID];
 const PK3_ALL_TARGET: &str = "all";
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -1297,46 +1298,76 @@ fn client_has_pk3_mods(game_root: &std::path::Path, client_id: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn pk3_target_dest(
-    base_dir: &std::path::Path,
-    game_root: &std::path::Path,
+// Every distinct game folder currently in play: the shared default plus any
+// client pointed at its own. Deduped by game root, since the common case is
+// still everything living in one folder.
+fn all_game_roots(app: &tauri::AppHandle) -> Vec<(std::path::PathBuf, std::path::PathBuf)> {
+    let mut seen = std::collections::HashSet::new();
+    let mut roots = Vec::new();
+    let candidates = std::iter::once(None).chain(PK3_CLIENT_IDS.iter().map(|id| Some(*id)));
+    for mod_id in candidates {
+        if let Ok((base_dir, game_root)) = find_jk2_base_and_root(app, mod_id) {
+            if seen.insert(game_root.clone()) {
+                roots.push((base_dir, game_root));
+            }
+        }
+    }
+    roots
+}
+
+// Where a PK3 aimed at `target` has to physically land.
+//
+// Once clients can each have their own game folder, this stops being one
+// path. A client only ever reads the base/ and fs_game folder inside its
+// *own* folder, so "All Clients" means one copy in every distinct game
+// folder, and a specific client means that client's folder - not the
+// default's. Getting this wrong is silent: the file lands somewhere real,
+// the client just never looks there, and the mod quietly does nothing.
+fn pk3_target_dests(
+    app: &tauri::AppHandle,
     target: &str,
     filename: &str,
-) -> std::path::PathBuf {
+) -> Vec<std::path::PathBuf> {
     if target == PK3_ALL_TARGET {
-        base_dir.join(filename)
+        all_game_roots(app)
+            .into_iter()
+            .map(|(base_dir, _)| base_dir.join(filename))
+            .collect()
     } else {
-        client_mod_folder(game_root, target).join(filename)
+        find_jk2_base_and_root(app, Some(target))
+            .ok()
+            .map(|(_, game_root)| vec![client_mod_folder(&game_root, target).join(filename)])
+            .unwrap_or_default()
     }
 }
 
 fn deploy_pk3_to_targets(
+    app: &tauri::AppHandle,
     library_path: &std::path::Path,
-    base_dir: &std::path::Path,
-    game_root: &std::path::Path,
     filename: &str,
     targets: &[String],
 ) -> Result<(), String> {
     for target in targets {
-        let dest = pk3_target_dest(base_dir, game_root, target, filename);
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        for dest in pk3_target_dests(app, target, filename) {
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            std::fs::copy(library_path, &dest).map_err(|e| e.to_string())?;
         }
-        std::fs::copy(library_path, &dest).map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 
 fn undeploy_pk3_from_targets(
-    base_dir: &std::path::Path,
-    game_root: &std::path::Path,
+    app: &tauri::AppHandle,
     filename: &str,
     targets: &[String],
 ) -> Result<(), String> {
     for target in targets {
-        let dest = pk3_target_dest(base_dir, game_root, target, filename);
-        if dest.exists() {
-            std::fs::remove_file(&dest).map_err(|e| e.to_string())?;
+        for dest in pk3_target_dests(app, target, filename) {
+            if dest.exists() {
+                std::fs::remove_file(&dest).map_err(|e| e.to_string())?;
+            }
         }
     }
     Ok(())
@@ -1376,27 +1407,35 @@ fn list_pk3_filenames(dir: &std::path::Path) -> Vec<String> {
 // this the Mods view would just never know they exist.
 fn reconcile_pk3_mods_with_disk(
     app: &tauri::AppHandle,
-    base_dir: &std::path::Path,
-    game_root: &std::path::Path,
     mods: &mut Vec<Pk3Mod>,
 ) -> Result<(), String> {
     let library_dir = pk3_library_dir(app)?;
     std::fs::create_dir_all(&library_dir).map_err(|e| e.to_string())?;
 
     let mut found: std::collections::HashMap<String, (Vec<String>, std::path::PathBuf)> = std::collections::HashMap::new();
-    for filename in list_pk3_filenames(base_dir) {
-        let path = base_dir.join(&filename);
-        found.entry(filename).or_insert((Vec::new(), path)).0.push(PK3_ALL_TARGET.to_string());
+    // Scans every game folder in play, not just the default one - a client
+    // pointed at its own folder keeps its base/ and its auto-downloaded PK3s
+    // there, and those are exactly as real as the default folder's.
+    for (base_dir, _) in all_game_roots(app) {
+        for filename in list_pk3_filenames(&base_dir) {
+            let path = base_dir.join(&filename);
+            found.entry(filename).or_insert((Vec::new(), path)).0.push(PK3_ALL_TARGET.to_string());
+        }
     }
     for client_id in PK3_CLIENT_IDS {
-        let folder = client_mod_folder(game_root, client_id);
+        let Ok((_, game_root)) = find_jk2_base_and_root(app, Some(client_id)) else { continue };
+        let folder = client_mod_folder(&game_root, client_id);
         for filename in list_pk3_filenames(&folder) {
             let path = folder.join(&filename);
             found.entry(filename).or_insert((Vec::new(), path)).0.push(client_id.to_string());
         }
     }
 
-    for (filename, (targets, source_path)) in found {
+    for (filename, (mut targets, source_path)) in found {
+        // The same file showing up in several folders is one mod aimed at
+        // "all", not the same target listed repeatedly.
+        targets.sort();
+        targets.dedup();
         let library_path = library_dir.join(&filename);
         if !library_path.exists() {
             let _ = std::fs::copy(&source_path, &library_path);
@@ -1417,9 +1456,9 @@ fn reconcile_pk3_mods_with_disk(
 
 #[tauri::command]
 fn list_pk3_mods(app: tauri::AppHandle) -> Result<Vec<Pk3Mod>, String> {
-    let (base_dir, game_root) = find_jk2_base_and_root(&app, None)?;
+    let (_, game_root) = find_jk2_base_and_root(&app, None)?;
     let mut mods = load_pk3_mods(&game_root);
-    reconcile_pk3_mods_with_disk(&app, &base_dir, &game_root, &mut mods)?;
+    reconcile_pk3_mods_with_disk(&app, &mut mods)?;
     save_pk3_mods(&game_root, &mods)?;
     Ok(mods)
 }
@@ -1497,7 +1536,7 @@ fn set_pk3_mod_targets(app: tauri::AppHandle, filename: String, targets: Vec<Str
         }
     }
 
-    let (base_dir, game_root) = find_jk2_base_and_root(&app, None)?;
+    let (_, game_root) = find_jk2_base_and_root(&app, None)?;
     let library_path = pk3_library_dir(&app)?.join(&filename);
     if !library_path.exists() {
         return Err(format!("{filename} is not in the mod library"));
@@ -1509,18 +1548,18 @@ fn set_pk3_mod_targets(app: tauri::AppHandle, filename: String, targets: Vec<Str
         .find(|m| m.filename == filename)
         .ok_or_else(|| format!("{filename} is not tracked"))?;
 
-    undeploy_pk3_from_targets(&base_dir, &game_root, &filename, &entry.targets)?;
-    deploy_pk3_to_targets(&library_path, &base_dir, &game_root, &filename, &targets)?;
+    undeploy_pk3_from_targets(&app, &filename, &entry.targets)?;
+    deploy_pk3_to_targets(&app, &library_path, &filename, &targets)?;
     entry.targets = targets;
     save_pk3_mods(&game_root, &mods)
 }
 
 #[tauri::command]
 fn remove_pk3_mod(app: tauri::AppHandle, filename: String) -> Result<(), String> {
-    let (base_dir, game_root) = find_jk2_base_and_root(&app, None)?;
+    let (_, game_root) = find_jk2_base_and_root(&app, None)?;
     let mut mods = load_pk3_mods(&game_root);
     if let Some(entry) = mods.iter().find(|m| m.filename == filename) {
-        undeploy_pk3_from_targets(&base_dir, &game_root, &filename, &entry.targets)?;
+        undeploy_pk3_from_targets(&app, &filename, &entry.targets)?;
     }
     mods.retain(|m| m.filename != filename);
     save_pk3_mods(&game_root, &mods)?;

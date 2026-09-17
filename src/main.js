@@ -323,11 +323,18 @@ function serverDisplayName(address) {
   return data && !data.error ? stripQuakeColors(data.hostname) : address;
 }
 
+// `name` is the MOD_HANDLERS key, so a target can be filtered out on a
+// platform that can't install that client at all (NWH is Linux-only).
 const PK3_CLIENTS = [
-  { id: "jk2mv", label: "JK2MV" },
-  { id: "tommyternal", label: "TommyternalJK2MV" },
-  { id: "openjo", label: "OpenJO" },
+  { id: "jk2mv", label: "JK2MV", name: "JK2MV" },
+  { id: "tommyternal", label: "TommyternalJK2MV", name: "TommyternalJK2MV" },
+  { id: "openjo", label: "OpenJO", name: "OpenJO" },
+  { id: "nwh", label: "NWH", name: "NWH" },
 ];
+
+function pk3TargetClients() {
+  return PK3_CLIENTS.filter((c) => modSupportedOnCurrentPlatform(c.name));
+}
 
 // Kept in sync by hand with jk2ctf.com/faq's ACCOUNT + LAUNCHER sections -
 // embedded here so opening it doesn't leave the app. /ctf-101 (gameplay) has
@@ -1095,7 +1102,7 @@ async function removePk3Mod(filename) {
 function pk3RowHtml(mod) {
   const isAll = mod.targets.includes("all");
   const allCheckbox = `<label class="pk3-target"><input type="checkbox" data-filename="${mod.filename}" data-target="all" ${isAll ? "checked" : ""}> All Clients</label>`;
-  const clientCheckboxes = PK3_CLIENTS.map((c) => {
+  const clientCheckboxes = pk3TargetClients().map((c) => {
     const checked = !isAll && mod.targets.includes(c.id);
     return `<label class="pk3-target"><input type="checkbox" data-filename="${mod.filename}" data-target="${c.id}" ${isAll ? "disabled" : ""} ${checked ? "checked" : ""}> ${c.label}</label>`;
   }).join("");
