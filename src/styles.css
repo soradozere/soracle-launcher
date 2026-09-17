@@ -1612,3 +1612,24 @@ button.change-folder:hover {
   border-radius: 999px;
   padding: 0.1rem 0.45rem;
 }
+
+/* "It's already installed next door" suggestion, beside the Install button */
+
+.folder-suggestion {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  font-size: 0.74rem;
+  color: var(--text-dim);
+}
+
+.folder-suggestion-path {
+  max-width: 22rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-family: "SF Mono", ui-monospace, Menlo, monospace;
+  font-size: 0.7rem;
+}

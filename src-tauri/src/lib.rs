@@ -435,6 +435,57 @@ fn clear_client_folder(app: tauri::AppHandle, mod_id: String) -> Result<(), Stri
     clear_folder_override(&app, &mod_id)
 }
 
+// Accepting a detected folder (see detect_client_folder) - no file dialog,
+// the path is one this launcher already found and validated. Re-validated
+// here anyway rather than trusted, since it arrives back via the frontend.
+#[tauri::command]
+fn set_client_folder(app: tauri::AppHandle, mod_id: String, path: String) -> Result<(), String> {
+    let dir = std::path::PathBuf::from(&path);
+    if !dir.is_dir() {
+        return Err(format!("{path} isn't a folder"));
+    }
+    find_base_dir(&dir)?;
+    save_folder_override(&app, Some(&mod_id), &dir)
+}
+
+// Clients very often sit side by side rather than inside one shared folder -
+// a "Games" directory holding a complete game folder per client is a normal
+// way to set this up without Steam involved at all. When a client isn't in
+// the folder we're currently pointed at, the neighbours are the obvious next
+// place to look, and finding it there beats telling someone it isn't
+// installed when it demonstrably is.
+//
+// Returns a suggestion only, never applied on its own: the UI offers it and
+// the user accepts. Stays quiet unless the answer is unambiguous - one
+// neighbour, holding a real base/ folder and this client's own executable.
+#[tauri::command]
+fn detect_client_folder(app: tauri::AppHandle, mod_id: String) -> Option<String> {
+    let binary = client_binary_name(&mod_id)?;
+
+    // Already resolves to somewhere this client actually is - nothing to say.
+    if let Ok((_, game_root)) = find_jk2_base_and_root(&app, Some(&mod_id)) {
+        if game_root.join(binary).exists() {
+            return None;
+        }
+    }
+
+    let current = find_jk2_install(&app, Some(&mod_id)).ok()?;
+    let siblings = std::fs::read_dir(current.parent()?).ok()?;
+    let mut hits: Vec<std::path::PathBuf> = siblings
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|dir| dir.is_dir())
+        .filter(|dir| {
+            find_base_dir(dir)
+                .ok()
+                .and_then(|base| base.parent().map(|root| root.join(binary).exists()))
+                .unwrap_or(false)
+        })
+        .collect();
+
+    (hits.len() == 1).then(|| hits.remove(0).to_string_lossy().to_string())
+}
+
 // blocking_pick_folder's own docs say not to call it on the main thread - an
 // async command runs on a worker instead, which is what stopped this
 // crashing (the same fix pick_pk3_files needed).
@@ -1627,6 +1678,8 @@ pub fn run() {
             get_client_folder,
             pick_client_folder,
             clear_client_folder,
+            set_client_folder,
+            detect_client_folder,
             preview_install_nwh,
             install_nwh,
             is_nwh_installed,

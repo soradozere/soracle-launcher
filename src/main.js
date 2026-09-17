@@ -163,6 +163,39 @@ async function setClientFolder(name) {
     const picked = await window.__TAURI__.core.invoke("pick_client_folder", { modId });
     if (picked === null) return; // cancelled
     clientFolders[name] = { path: picked, is_own: true };
+    clientFolderSuggestions[name] = undefined;
+    await refreshModStates();
+  } catch (err) {
+    modState[name] = { ...modState[name], message: `Error: ${err}` };
+    renderMain();
+  }
+}
+
+// A client that isn't in the folder we're pointed at is very often sitting
+// in a sibling folder (a "Games" dir with one game folder per client is a
+// normal setup). Ask the backend whether it can see it next door, so we can
+// offer that instead of insisting it isn't installed.
+const clientFolderSuggestions = {}; // name -> path, null (none), or undefined while loading
+
+async function loadFolderSuggestion(name) {
+  const modId = MOD_HANDLERS[name]?.modId;
+  if (!modId) return;
+  try {
+    clientFolderSuggestions[name] = await window.__TAURI__.core.invoke("detect_client_folder", { modId });
+  } catch (err) {
+    clientFolderSuggestions[name] = null;
+    console.error("Folder detection failed:", err);
+  }
+  if (selected === name) renderMain();
+}
+
+async function useSuggestedFolder(name, path) {
+  const modId = MOD_HANDLERS[name]?.modId;
+  if (!modId) return;
+  try {
+    await window.__TAURI__.core.invoke("set_client_folder", { modId, path });
+    clientFolders[name] = { path, is_own: true };
+    clientFolderSuggestions[name] = null;
     await refreshModStates();
   } catch (err) {
     modState[name] = { ...modState[name], message: `Error: ${err}` };
@@ -176,6 +209,7 @@ async function resetClientFolder(name) {
   try {
     await window.__TAURI__.core.invoke("clear_client_folder", { modId });
     clientFolders[name] = undefined;
+    clientFolderSuggestions[name] = undefined;
     await refreshModStates();
   } catch (err) {
     modState[name] = { ...modState[name], message: `Error: ${err}` };
@@ -1400,6 +1434,18 @@ function renderMain() {
       actions += `<button class="uninstall-btn" data-action="uninstall" ${state.busy ? "disabled" : ""}>Uninstall</button>`;
     } else {
       actions = `<button data-action="install" ${state.busy ? "disabled" : ""}>Install</button>`;
+      // Before offering to install a fresh copy, check whether this client
+      // is simply sitting in a folder next door - installing over the top of
+      // the wrong folder is the confusing outcome otherwise.
+      const suggestion = clientFolderSuggestions[mod.name];
+      if (suggestion === undefined) {
+        loadFolderSuggestion(mod.name);
+      } else if (suggestion) {
+        actions += `<span class="folder-suggestion">
+          Already installed in <span class="folder-suggestion-path" title="${suggestion}">${suggestion}</span>
+          <button class="change-folder" data-use-suggested-folder="${mod.name}" data-suggested-path="${suggestion}">Use that folder</button>
+        </span>`;
+      }
     }
   }
   let statsHtml = "";
@@ -1679,6 +1725,11 @@ document.getElementById("main").addEventListener("click", (e) => {
   const btn = e.target.closest("button[data-action]");
   if (btn) {
     handleAction(selected, btn.dataset.action);
+    return;
+  }
+  const useSuggestedBtn = e.target.closest("button[data-use-suggested-folder]");
+  if (useSuggestedBtn) {
+    useSuggestedFolder(useSuggestedBtn.dataset.useSuggestedFolder, useSuggestedBtn.dataset.suggestedPath);
     return;
   }
   const pickFolderBtn = e.target.closest("button[data-pick-client-folder]");
