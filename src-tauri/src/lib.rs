@@ -957,12 +957,79 @@ fn uninstall_nwh(app: tauri::AppHandle) -> Result<String, String> {
     uninstall_mod(NWH_MOD_ID, &game_root)
 }
 
+// How long a freshly launched client gets to prove it actually started.
+// Nothing that fails to *start* - a missing library, a bad signature, a
+// binary for the wrong architecture - survives anywhere near this long;
+// dyld kills those within milliseconds. A game that got as far as opening
+// its window is well past the point where these failures happen.
+const LAUNCH_GRACE_PERIOD: std::time::Duration = std::time::Duration::from_secs(2);
+
+// Spawns a client binary directly and only reports success once it has
+// stayed alive through LAUNCH_GRACE_PERIOD. Just spawning isn't enough:
+// spawn() succeeds as soon as the OS creates the process, so a client that
+// dies on startup (Tommyternal on a Mac without Homebrew, before its
+// libraries were bundled) still read as "Launched" while nothing appeared.
+// Its output goes to a per-client log in the app data folder, truncated
+// each launch, so a failure can quote what the client itself said.
+fn spawn_client(
+    app: &tauri::AppHandle,
+    mod_id: &str,
+    mut cmd: std::process::Command,
+    binary: &std::path::Path,
+) -> Result<String, String> {
+    let log_dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("logs");
+    std::fs::create_dir_all(&log_dir).map_err(|e| e.to_string())?;
+    let log_path = log_dir.join(format!("{mod_id}-last-launch.log"));
+    let log = std::fs::File::create(&log_path).map_err(|e| e.to_string())?;
+    cmd.stdout(log.try_clone().map_err(|e| e.to_string())?);
+    cmd.stderr(log);
+
+    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+    let started = std::time::Instant::now();
+    while started.elapsed() < LAUNCH_GRACE_PERIOD {
+        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+            return Err(describe_failed_launch(binary, status, &log_path));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(format!("Launched {}", binary.display()))
+}
+
+fn describe_failed_launch(
+    binary: &std::path::Path,
+    status: std::process::ExitStatus,
+    log_path: &std::path::Path,
+) -> String {
+    #[cfg(unix)]
+    let how = match std::os::unix::process::ExitStatusExt::signal(&status) {
+        Some(signal) => format!("was killed by the system (signal {signal})"),
+        None => format!("exited immediately ({status})"),
+    };
+    #[cfg(not(unix))]
+    let how = format!("exited immediately ({status})");
+
+    // The last few lines are where the reason lives - dyld's "Library not
+    // loaded: ..." or the engine's own fatal error - and the whole log can
+    // be long enough to bury it.
+    let log = std::fs::read_to_string(log_path).unwrap_or_default();
+    let lines: Vec<&str> = log.lines().filter(|l| !l.trim().is_empty()).collect();
+    let tail = lines[lines.len().saturating_sub(8)..].join("\n");
+    let name = binary.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
+    if tail.is_empty() {
+        format!("{name} {how} without printing anything. Full log: {}", log_path.display())
+    } else {
+        format!("{name} {how}:\n{tail}\n\nFull log: {}", log_path.display())
+    }
+}
+
 // NWH only ships a Linux build (see the manifest/FAQ) - nwhmp is a native
 // ELF binary, so this is never reachable on macOS/Windows regardless; the
 // frontend already only offers Install/Play for it when currentPlatform is
 // "linux" (see modSupportedOnCurrentPlatform in main.js).
-#[tauri::command]
-fn play_nwh(app: tauri::AppHandle, connect_address: Option<String>) -> Result<String, String> {
+fn play_nwh_blocking(app: tauri::AppHandle, connect_address: Option<String>) -> Result<String, String> {
     let (_, game_root) = find_jk2_base_and_root(&app, Some(NWH_MOD_ID))?;
     let binary = game_root.join(client_binary_name(NWH_MOD_ID).unwrap());
     let mut cmd = std::process::Command::new(&binary);
@@ -973,11 +1040,17 @@ fn play_nwh(app: tauri::AppHandle, connect_address: Option<String>) -> Result<St
     if let Some(address) = &connect_address {
         cmd.args(["+connect", address]);
     }
-    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
-    std::thread::spawn(move || {
-        let _ = child.wait();
-    });
-    Ok(format!("Launched {}", binary.display()))
+    spawn_client(&app, NWH_MOD_ID, cmd, &binary)
+}
+
+// Async so spawn_client's grace-period wait runs on the blocking pool
+// rather than the main thread, which would freeze the window meanwhile.
+// The other play_* commands wrap their blocking halves the same way.
+#[tauri::command]
+async fn play_nwh(app: tauri::AppHandle, connect_address: Option<String>) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || play_nwh_blocking(app, connect_address))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 fn resolve_tommyternal_install(
@@ -1001,8 +1074,7 @@ fn uninstall_tommyternal(app: tauri::AppHandle) -> Result<String, String> {
     uninstall_mod(TOMMYTERNAL_MOD_ID, &game_root)
 }
 
-#[tauri::command]
-fn play_tommyternal(app: tauri::AppHandle, connect_address: Option<String>) -> Result<String, String> {
+fn play_tommyternal_blocking(app: tauri::AppHandle, connect_address: Option<String>) -> Result<String, String> {
     let (_, game_root) = find_jk2_base_and_root(&app, Some(TOMMYTERNAL_MOD_ID))?;
     let binary = game_root.join(client_binary_name(TOMMYTERNAL_MOD_ID).unwrap());
     let mut cmd = std::process::Command::new(&binary);
@@ -1013,11 +1085,33 @@ fn play_tommyternal(app: tauri::AppHandle, connect_address: Option<String>) -> R
     if let Some(address) = &connect_address {
         cmd.args(["+connect", address]);
     }
-    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
-    std::thread::spawn(move || {
-        let _ = child.wait();
-    });
-    Ok(format!("Launched {}", binary.display()))
+    // Tommyternal's macOS build links SDL2 (sdl2-compat) and OpenSSL at
+    // their Homebrew paths, /opt/homebrew/opt/..., so on a Mac without
+    // Homebrew dyld kills it before a window opens. dyld retries any library
+    // missing from its recorded path by file name in each
+    // DYLD_FALLBACK_LIBRARY_PATH directory, so pointing that at this app's
+    // own Resources - where the release build ships copies of all three
+    // (scripts/fetch-macos-dylibs.sh), next to the libSDL3.dylib that
+    // sdl2-compat loads from its own folder - lets it start. Someone who
+    // does have Homebrew still gets theirs; the fallback only applies to
+    // what's missing. Setting the variable replaces dyld's default fallback
+    // list, so that's carried along rather than lost.
+    if cfg!(target_os = "macos") {
+        let resources = app.path().resource_dir().map_err(|e| e.to_string())?;
+        let home = std::env::var("HOME").unwrap_or_default();
+        cmd.env(
+            "DYLD_FALLBACK_LIBRARY_PATH",
+            format!("{}:{home}/lib:/usr/local/lib:/usr/lib", resources.display()),
+        );
+    }
+    spawn_client(&app, TOMMYTERNAL_MOD_ID, cmd, &binary)
+}
+
+#[tauri::command]
+async fn play_tommyternal(app: tauri::AppHandle, connect_address: Option<String>) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || play_tommyternal_blocking(app, connect_address))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 fn preview_install(
@@ -1135,8 +1229,7 @@ fn uninstall_openjo(app: tauri::AppHandle) -> Result<String, String> {
     uninstall_mod(OPENJO_MOD_ID, &game_root)
 }
 
-#[tauri::command]
-fn play_openjo(app: tauri::AppHandle) -> Result<String, String> {
+fn play_openjo_blocking(app: tauri::AppHandle) -> Result<String, String> {
     // Single-player only - no +connect support here (see manifest description).
     let (_, game_root) = find_jk2_base_and_root(&app, Some(OPENJO_MOD_ID))?;
 
@@ -1160,11 +1253,14 @@ fn play_openjo(app: tauri::AppHandle) -> Result<String, String> {
     if client_has_pk3_mods(&game_root, OPENJO_MOD_ID) {
         cmd.args(["+set", "fs_game", &client_mod_folder_name(OPENJO_MOD_ID)]);
     }
-    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
-    std::thread::spawn(move || {
-        let _ = child.wait();
-    });
-    Ok(format!("Launched {}", binary.display()))
+    spawn_client(&app, OPENJO_MOD_ID, cmd, &binary)
+}
+
+#[tauri::command]
+async fn play_openjo(app: tauri::AppHandle) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || play_openjo_blocking(app))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 const JK2MV_MOD_ID: &str = "jk2mv";
@@ -1202,8 +1298,7 @@ fn uninstall_jk2mv(app: tauri::AppHandle) -> Result<String, String> {
     uninstall_mod(JK2MV_MOD_ID, &game_root)
 }
 
-#[tauri::command]
-fn play_jk2mv(app: tauri::AppHandle, connect_address: Option<String>) -> Result<String, String> {
+fn play_jk2mv_blocking(app: tauri::AppHandle, connect_address: Option<String>) -> Result<String, String> {
     let (_, game_root) = find_jk2_base_and_root(&app, Some(JK2MV_MOD_ID))?;
 
     // `open --args` only accepts one --args flag - everything after it is
@@ -1238,11 +1333,14 @@ fn play_jk2mv(app: tauri::AppHandle, connect_address: Option<String>) -> Result<
     let mut cmd = std::process::Command::new(&binary);
     cmd.current_dir(&game_root);
     cmd.args(&extra_args);
-    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
-    std::thread::spawn(move || {
-        let _ = child.wait();
-    });
-    Ok(format!("Launched {}", binary.display()))
+    spawn_client(&app, JK2MV_MOD_ID, cmd, &binary)
+}
+
+#[tauri::command]
+async fn play_jk2mv(app: tauri::AppHandle, connect_address: Option<String>) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || play_jk2mv_blocking(app, connect_address))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 // --- Custom PK3 mods --------------------------------------------------------

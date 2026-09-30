@@ -112,7 +112,12 @@ const KNOWN_SERVERS = [
   "176.103.220.40:28072", // freedom duels
   "199.19.72.85:28070", // Dozer NY NWH
   "108.248.225.180:28070", // Saberology
+  "208.167.239.201:28070", // New Jersey
 ];
+// Servers a user added themselves on the Servers page, on top of
+// KNOWN_SERVERS - kept per install, never shared.
+const CUSTOM_SERVERS_KEY = "jk2launcher.customServers";
+const DEFAULT_SERVER_PORT = 28070;
 const FAVORITE_SERVERS_KEY = "jk2launcher.favoriteServers";
 const FAVORITE_SERVERS_SEEDED_KEY = "jk2launcher.favoriteServersSeeded";
 const LEGACY_FAVORITE_SERVER_KEY = "jk2launcher.favoriteServer"; // pre-multi-favorite, single address
@@ -250,6 +255,76 @@ function getFavoriteServers() {
 
 function isFavoriteServer(address) {
   return getFavoriteServers().includes(address);
+}
+
+function getCustomServers() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(CUSTOM_SERVERS_KEY) ?? "[]");
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function setCustomServers(list) {
+  try {
+    localStorage.setItem(CUSTOM_SERVERS_KEY, JSON.stringify(list));
+  } catch {
+    // Private-browsing-style storage block - the server just won't stick.
+  }
+}
+
+function isCustomServer(address) {
+  return getCustomServers().includes(address) && !KNOWN_SERVERS.includes(address);
+}
+
+// Everything the Servers page lists: the maintained list, then the user's own.
+function allServers() {
+  return Array.from(new Set([...KNOWN_SERVERS, ...getCustomServers()]));
+}
+
+// Accepts what people actually paste - "1.2.3.4:28070", a bare IP (JK2's
+// default port is assumed), a hostname, or a whole "/connect 1.2.3.4" line
+// copied from a Discord post - and returns a canonical "host:port", or null
+// with nothing that could be mistaken for an address. The narrow character
+// set also means the result is safe to drop straight into markup.
+function normalizeServerAddress(input) {
+  const raw = input.trim().replace(/^\/?connect\s+/i, "").trim();
+  const match = /^([A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?)(?::(\d{1,5}))?$/.exec(raw);
+  if (!match) return null;
+  const port = match[2] ? Number(match[2]) : DEFAULT_SERVER_PORT;
+  if (port < 1 || port > 65535) return null;
+  return `${match[1].toLowerCase()}:${port}`;
+}
+
+let addServerMessage = "";
+// The Servers page redraws as each server answers, so a half-typed address
+// lives here rather than only in the input it would otherwise be wiped from.
+let addServerDraft = "";
+
+function addCustomServer(input) {
+  const address = normalizeServerAddress(input);
+  if (!address) {
+    addServerMessage = "That doesn't look like a server address - try something like 1.2.3.4:28070.";
+    return;
+  }
+  if (allServers().includes(address)) {
+    addServerMessage = `${address} is already on the list.`;
+    return;
+  }
+  setCustomServers([...getCustomServers(), address]);
+  addServerMessage = `Added ${address}.`;
+  addServerDraft = "";
+}
+
+function removeCustomServer(address) {
+  setCustomServers(getCustomServers().filter((a) => a !== address));
+  // A server that's gone from the list shouldn't linger as a favorite
+  // either, with no row left to un-star it from.
+  if (isFavoriteServer(address)) toggleFavoriteServer(address);
+  delete serverStatusCache[address];
+  expandedServers.delete(address);
+  addServerMessage = "";
 }
 
 // Returns false (and changes nothing) if this would add a new favorite past
@@ -676,7 +751,7 @@ function pinnedActionButtonHtml(actionId) {
         <span class="pinned-action-meta">${meta} &middot; ${clientLabel}</span>
       </div>
       <button class="pinned-action-edit-btn" data-pinned-edit="${actionId}" title="Customize ${pinnedActionLabel(actionId)}">⚙</button>
-      ${serverJoinMessage[resolved.server] ? `<p class="detail-status">${serverJoinMessage[resolved.server]}</p>` : ""}
+      ${serverJoinMessage[resolved.server] ? `<p class="detail-status">${escapeHtml(serverJoinMessage[resolved.server])}</p>` : ""}
     </div>`;
 }
 
@@ -692,7 +767,7 @@ function editPinnedAction(actionId) {
   const installedJoinable = JOINABLE_CLIENTS.filter((name) => modState[name]?.installed);
   // Every known/favorited address, plus whatever's currently pinned even if
   // it's since fallen off both lists - never silently drop the current pick.
-  const serverOptions = Array.from(new Set([...getFavoriteServers(), ...KNOWN_SERVERS, pin.server]));
+  const serverOptions = Array.from(new Set([...getFavoriteServers(), ...allServers(), pin.server]));
 
   return new Promise((resolve) => {
     const overlay = document.createElement("div");
@@ -809,7 +884,7 @@ function favoriteServerRowHtml(address) {
       ${selectHtml}
       <span class="favorite-row-meta">${data.map} &middot; ${data.players.length}/${data.max_clients} players</span>
       <button class="server-favorite-btn active" data-address="${address}" title="Remove favorite">★</button>
-      ${serverJoinMessage[address] ? `<p class="detail-status">${serverJoinMessage[address]}</p>` : ""}
+      ${serverJoinMessage[address] ? `<p class="detail-status">${escapeHtml(serverJoinMessage[address])}</p>` : ""}
     </div>`;
 }
 
@@ -927,6 +1002,9 @@ function serverRowHtml(data) {
       <span class="server-row-ping">${data.ping_ms}ms</span>
       <span class="server-row-caret">${isExpanded ? "▾" : "▸"}</span>
     </div>`;
+  const removeHtml = isCustomServer(data.address)
+    ? `<button class="server-remove-btn" data-address="${data.address}">Remove from list</button>`
+    : "";
   if (!isExpanded) {
     return `<div class="server-row">${summaryHtml}</div>`;
   }
@@ -952,27 +1030,48 @@ function serverRowHtml(data) {
         <p class="server-meta">${data.address}</p>
         <ul class="server-player-list">${playerRows}</ul>
         ${joinHtml}
-        <p class="detail-status">${serverJoinMessage[data.address] ?? ""}</p>
+        <p class="detail-status">${escapeHtml(serverJoinMessage[data.address] ?? "")}</p>
+        ${removeHtml}
+      </div>
+    </div>`;
+}
+
+// A server someone added that isn't answering. Unlike a maintained one,
+// it's listed anyway: hiding it would look like the add didn't work, and
+// leave no way to remove a typo.
+function unreachableCustomServerRowHtml(address) {
+  return `
+    <div class="server-row server-row--unreachable">
+      <div class="server-row-static">
+        <span></span>
+        <span class="server-row-name">${address}</span>
+        <span class="server-row-map">Not responding</span>
+        <span class="server-row-players"></span>
+        <span class="server-row-ping"></span>
+        <button class="server-remove-btn server-remove-btn--inline" data-address="${address}" title="Remove from list">×</button>
       </div>
     </div>`;
 }
 
 function renderServersView(mainEl) {
   const resolved = [];
+  const unreachableCustom = [];
   let pending = 0;
-  for (const address of KNOWN_SERVERS) {
+  for (const address of allServers()) {
     const data = serverStatusCache[address];
     if (data === undefined) {
       pending++;
       loadServerStatus(address);
     } else if (!data.error) {
-      resolved.push(data);
+      resolved.push({ ...data, address });
+    } else if (isCustomServer(address)) {
+      unreachableCustom.push(address);
     }
   }
   resolved.sort((a, b) => b.players.length - a.players.length);
 
   let listHtml;
-  if (resolved.length === 0) {
+  if (resolved.length === 0 && unreachableCustom.length === 0) {
     listHtml = `<p class="detail-status">${pending > 0 ? "Querying known servers..." : "None of the known servers are online right now."}</p>`;
   } else {
     listHtml = `
@@ -984,17 +1083,28 @@ function renderServersView(mainEl) {
         <span class="server-row-ping">Ping</span>
         <span class="server-row-caret"></span>
       </div>
-      <div class="server-list">${resolved.map(serverRowHtml).join("")}</div>
+      <div class="server-list">${resolved.map(serverRowHtml).join("")}${unreachableCustom.map(unreachableCustomServerRowHtml).join("")}</div>
       ${pending > 0 ? `<p class="detail-status">Querying ${pending} more...</p>` : ""}`;
   }
+  const addInputFocused = document.activeElement?.id === "server-add-input";
   mainEl.innerHTML = `
     <div class="detail-header">
       <h2>Servers</h2>
       <button class="server-refresh-btn" id="server-refresh-btn">Refresh</button>
     </div>
     <p class="detail-description">Known JK2 1.02 community servers, queried directly - star a favorite for a one-click join from Home, click a row for details.</p>
+    <div class="server-add">
+      <input class="server-add-input" id="server-add-input" type="text" placeholder="Add a server - e.g. 1.2.3.4:28070" spellcheck="false" autocomplete="off" value="${escapeHtml(addServerDraft)}" />
+      <button class="server-refresh-btn" id="server-add-btn">Add server</button>
+    </div>
+    ${addServerMessage ? `<p class="detail-status">${escapeHtml(addServerMessage)}</p>` : ""}
     ${listHtml}
   `;
+  if (addInputFocused) {
+    const input = document.getElementById("server-add-input");
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+  }
 }
 
 function faqEntryHtml(e) {
@@ -1499,7 +1609,7 @@ function renderMain() {
     <div class="detail-header"><h2>${mod.displayName ?? mod.name}</h2><span class="detail-version">${mod.version}</span></div>
     <p class="detail-description">${mod.description ?? ""}</p>
     <div class="detail-actions">${actions}</div>
-    <p class="detail-status">${state.message ?? ""}</p>
+    <p class="detail-status">${escapeHtml(state.message ?? "")}</p>
     ${folderHtml}
     ${statsHtml}
     ${releaseHtml}
@@ -1827,7 +1937,19 @@ document.getElementById("main").addEventListener("click", (e) => {
     return;
   }
   if (e.target.closest("#server-refresh-btn")) {
-    for (const address of KNOWN_SERVERS) delete serverStatusCache[address];
+    for (const address of allServers()) delete serverStatusCache[address];
+    renderMain();
+    return;
+  }
+  if (e.target.closest("#server-add-btn")) {
+    addCustomServer(addServerDraft);
+    renderMain();
+    document.getElementById("server-add-input")?.focus();
+    return;
+  }
+  const serverRemoveBtn = e.target.closest(".server-remove-btn");
+  if (serverRemoveBtn) {
+    removeCustomServer(serverRemoveBtn.dataset.address);
     renderMain();
     return;
   }
@@ -1846,6 +1968,10 @@ document.getElementById("main").addEventListener("change", (e) => {
 });
 
 document.getElementById("main").addEventListener("input", (e) => {
+  if (e.target.id === "server-add-input") {
+    addServerDraft = e.target.value;
+    return;
+  }
   const monolithSearchEl = e.target.closest("#monolith-search");
   if (monolithSearchEl) {
     monolithSearch = monolithSearchEl.value;
@@ -1860,6 +1986,12 @@ document.getElementById("main").addEventListener("input", (e) => {
     installedModsPage = 0;
     const resultsEl = document.getElementById("installed-mods-results");
     if (resultsEl) resultsEl.innerHTML = renderInstalledModsResults();
+  }
+});
+
+document.getElementById("main").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && e.target.id === "server-add-input") {
+    document.getElementById("server-add-btn")?.click();
   }
 });
 

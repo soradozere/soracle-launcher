@@ -48,6 +48,9 @@ means something actually went wrong with that build.
     packages, plus `build-essential`, `curl`, `wget`, `file`, `libssl-dev`,
     `libxdo-dev`
   - **Windows:** MSVC build tools + WebView2 runtime (bundled on Windows 11)
+  - **macOS:** run `./scripts/fetch-macos-dylibs.sh` once before
+    `pnpm tauri build`. It fetches the SDL2/OpenSSL libraries the launcher
+    ships so Tommyternal runs on Macs without Homebrew (CI does this itself).
 
 ## Development
 
