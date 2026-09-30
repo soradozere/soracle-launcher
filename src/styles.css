@@ -1399,6 +1399,62 @@ button.change-folder:hover {
   color: var(--border);
 }
 
+.server-add {
+  display: flex;
+  gap: 0.5rem;
+  max-width: 34rem;
+  margin: 0 0 0.9rem;
+}
+
+.server-add-input {
+  flex: 1;
+  min-width: 0;
+  font-family: "SF Mono", ui-monospace, Menlo, monospace;
+  font-size: 0.8rem;
+  color: var(--text-bright);
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.35rem 0.6rem;
+}
+
+.server-add-input:focus {
+  outline: none;
+  border-color: var(--primary-dim);
+}
+
+/* An added server that isn't answering - same columns, no expand. */
+.server-row-static {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1.6fr) minmax(0, 1.1fr) 56px 50px 14px;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.55rem 0.9rem;
+  opacity: 0.6;
+}
+
+.server-remove-btn {
+  font-family: inherit;
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  background: none;
+  border: none;
+  padding: 0;
+  margin-top: 0.4rem;
+  cursor: pointer;
+}
+
+.server-remove-btn:hover {
+  color: var(--text-bright);
+  text-decoration: underline;
+}
+
+.server-remove-btn--inline {
+  margin: 0;
+  font-size: 1rem;
+  line-height: 1;
+}
+
 .server-refresh-btn {
   font-family: inherit;
   font-size: 0.82rem;
