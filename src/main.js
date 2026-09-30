@@ -676,7 +676,7 @@ function pinnedActionButtonHtml(actionId) {
         <span class="pinned-action-meta">${meta} &middot; ${clientLabel}</span>
       </div>
       <button class="pinned-action-edit-btn" data-pinned-edit="${actionId}" title="Customize ${pinnedActionLabel(actionId)}">⚙</button>
-      ${serverJoinMessage[resolved.server] ? `<p class="detail-status">${serverJoinMessage[resolved.server]}</p>` : ""}
+      ${serverJoinMessage[resolved.server] ? `<p class="detail-status">${escapeHtml(serverJoinMessage[resolved.server])}</p>` : ""}
     </div>`;
 }
 
@@ -809,7 +809,7 @@ function favoriteServerRowHtml(address) {
       ${selectHtml}
       <span class="favorite-row-meta">${data.map} &middot; ${data.players.length}/${data.max_clients} players</span>
       <button class="server-favorite-btn active" data-address="${address}" title="Remove favorite">★</button>
-      ${serverJoinMessage[address] ? `<p class="detail-status">${serverJoinMessage[address]}</p>` : ""}
+      ${serverJoinMessage[address] ? `<p class="detail-status">${escapeHtml(serverJoinMessage[address])}</p>` : ""}
     </div>`;
 }
 
@@ -1499,7 +1499,7 @@ function renderMain() {
     <div class="detail-header"><h2>${mod.displayName ?? mod.name}</h2><span class="detail-version">${mod.version}</span></div>
     <p class="detail-description">${mod.description ?? ""}</p>
     <div class="detail-actions">${actions}</div>
-    <p class="detail-status">${state.message ?? ""}</p>
+    <p class="detail-status">${escapeHtml(state.message ?? "")}</p>
     ${folderHtml}
     ${statsHtml}
     ${releaseHtml}

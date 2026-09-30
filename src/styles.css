@@ -422,6 +422,9 @@ button.change-folder:hover {
   font-size: 0.8rem;
   color: var(--text-dim);
   min-height: 1.1em;
+  /* A failed launch quotes the client's own last few output lines. */
+  white-space: pre-line;
+  overflow-wrap: anywhere;
 }
 
 .detail-badge {

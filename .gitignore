@@ -22,3 +22,10 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Fetched at build time by scripts/fetch-macos-dylibs.sh
+src-tauri/resources/libSDL2-2.0.0.dylib
+src-tauri/resources/libssl.3.dylib
+src-tauri/resources/libcrypto.3.dylib
+src-tauri/resources/sdl2-compat-LICENSE.txt
+src-tauri/resources/openssl-LICENSE.txt
