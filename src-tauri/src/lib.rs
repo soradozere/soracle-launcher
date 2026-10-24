@@ -1987,6 +1987,12 @@ fn remove_pk3_mod(app: tauri::AppHandle, filename: String) -> Result<(), String>
 // engine runs that after the client's own config, so the preset wins, and
 // the client then saves those values itself. The clients' own config files
 // are never edited.
+//
+// Because the preset wins at every launch, a change made in-game would be
+// undone by the next one. So each launch also notes what the client's
+// config should hold once the preset has run, and the next launch compares
+// the client's config against that: whatever differs was changed in-game,
+// and goes into the preset before it's written again.
 
 const SHARED_CFG_NAME: &str = "launcher_shared.cfg";
 
@@ -2021,6 +2027,17 @@ struct ConfigPresetStore {
     // client id -> preset id
     #[serde(default)]
     assignments: std::collections::HashMap<String, String>,
+    // client id -> what its config held, preset included, at its last
+    // launch from here
+    #[serde(default)]
+    applied: std::collections::HashMap<String, AppliedPreset>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct AppliedPreset {
+    preset_id: String,
+    at: u64,
+    lines: Vec<String>,
 }
 
 fn preset_store_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
@@ -2232,14 +2249,167 @@ fn write_shared_cfg(app: &tauri::AppHandle, store: &ConfigPresetStore, client_id
     Ok(written)
 }
 
-// What a client's launch gets on top of its usual arguments. Rewrites the
-// file first, so a launch always runs the preset as it is now.
-fn shared_settings_args(app: &tauri::AppHandle, client_id: &str) -> Vec<String> {
-    let store = load_presets(app);
-    match write_shared_cfg(app, &store, client_id) {
-        Ok(n) if n > 0 => vec!["+exec".to_string(), SHARED_CFG_NAME.to_string()],
-        _ => Vec::new(),
+// A cfg line's value: everything after the bind key or cvar name, with
+// the quotes the engine writes around it taken off.
+fn cfg_line_value(line: &str) -> String {
+    line.split_whitespace().skip(2).collect::<Vec<_>>().join(" ").trim_matches('"').to_string()
+}
+
+fn cfg_lines_by_key(lines: &[String]) -> Vec<(String, String)> {
+    lines
+        .iter()
+        .filter_map(|l| classify_cfg_line(l).map(|(_, key)| (key, l.clone())))
+        .filter(|(key, _)| key != "unbindall")
+        .collect()
+}
+
+// When the client last wrote either of its configs, in Unix seconds.
+fn client_cfg_written(app: &tauri::AppHandle, client_id: &str) -> u64 {
+    [find_client_cfg(app, client_id), find_client_global_cfg(app, client_id)]
+        .into_iter()
+        .flatten()
+        .filter_map(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
+        .map(unix_secs)
+        .max()
+        .unwrap_or(0)
+}
+
+// Puts a line into the preset in place of the one with the same key, or
+// with the other binds or settings if it's new.
+fn upsert_preset_line(preset: &mut ConfigPreset, key: &str, line: &str) {
+    if let Some(existing) = preset.lines.iter_mut().find(|l| classify_cfg_line(l).is_some_and(|(_, k)| k == key)) {
+        *existing = line.to_string();
+        return;
     }
+    let is_bind = key.starts_with("bind ");
+    let at = if is_bind {
+        preset
+            .lines
+            .iter()
+            .rposition(|l| matches!(classify_cfg_line(l), Some((CfgLineKind::Bind, _))))
+            .map_or(0, |i| i + 1)
+    } else {
+        preset.lines.len()
+    };
+    preset.lines.insert(at, line.to_string());
+}
+
+// Folds whatever was changed in-game since the client's last launch from
+// here back into its preset. Only what the preset applies is touched: a
+// Controls only preset takes back binds, never settings. Returns whether
+// the preset changed.
+fn absorb_in_game_changes(app: &tauri::AppHandle, store: &mut ConfigPresetStore, client_id: &str) -> bool {
+    let Some(applied) = store.applied.get(client_id).cloned().or_else(|| applied_from_shared_cfg(app, store, client_id))
+    else {
+        return false;
+    };
+    if client_cfg_written(app, client_id) <= applied.at {
+        return false; // not run since
+    }
+    let Ok(text) = read_client_cfgs(app, client_id) else {
+        return false;
+    };
+    let Some(preset) = store.presets.iter_mut().find(|p| p.id == applied.preset_id) else {
+        return false;
+    };
+    if store.assignments.get(client_id) != Some(&preset.id) {
+        return false;
+    }
+    let changed = merge_in_game_changes(preset, &applied.lines, &text);
+    if changed {
+        preset.updated = now_secs();
+    }
+    changed
+}
+
+// A launch from before these records existed left only the file it wrote,
+// which serves as well for what the preset set - so long as it's this
+// preset's (one folder can be shared with another client's launches).
+fn applied_from_shared_cfg(app: &tauri::AppHandle, store: &ConfigPresetStore, client_id: &str) -> Option<AppliedPreset> {
+    let preset = assigned_preset(store, client_id)?;
+    let path = newest_file(shared_cfg_dirs(app, client_id).into_iter().map(|d| d.join(SHARED_CFG_NAME)))?;
+    let text = std::fs::read_to_string(&path).ok()?;
+    let header = format!("// \"{}\" - written by JK2 Launcher", preset.name.replace('\n', " "));
+    if !text.starts_with(&header) {
+        return None;
+    }
+    let at = std::fs::metadata(&path).and_then(|m| m.modified()).ok().map(unix_secs)?;
+    Some(AppliedPreset { preset_id: preset.id.clone(), at, lines: preset_lines_from_text(&text) })
+}
+
+// The comparison itself: `before` is what the config held after the preset
+// ran, `cfg_text` what it holds now.
+fn merge_in_game_changes(preset: &mut ConfigPreset, before: &[String], cfg_text: &str) -> bool {
+    let now: std::collections::HashMap<String, String> =
+        cfg_lines_by_key(&preset_lines_from_text(cfg_text)).into_iter().collect();
+    let before = cfg_lines_by_key(before);
+    let controls_only = preset.controls_only;
+    let managed = |key: &str| !controls_only || key.starts_with("bind ");
+    let mut changed = false;
+    for (key, line) in &before {
+        if !managed(key) {
+            continue;
+        }
+        match now.get(key) {
+            Some(current) if cfg_line_value(current) != cfg_line_value(line) => {
+                upsert_preset_line(preset, key, current);
+                changed = true;
+            }
+            // The engine writes every bind after an unbindall, so a missing
+            // one was unbound in-game.
+            None if key.starts_with("bind ") => {
+                preset.lines.retain(|l| !classify_cfg_line(l).is_some_and(|(_, k)| &k == key));
+                changed = true;
+            }
+            _ => {}
+        }
+    }
+    // Keys bound in-game. New settings are left out: those are a client's
+    // own additions, not something to carry to the others.
+    for (key, current) in &now {
+        if key.starts_with("bind ") && !before.iter().any(|(k, _)| k == key) {
+            upsert_preset_line(preset, key, current);
+            changed = true;
+        }
+    }
+    changed
+}
+
+// What the client's config should hold once this launch has run the
+// preset - its own config with the preset on top.
+fn record_applied_preset(app: &tauri::AppHandle, store: &mut ConfigPresetStore, client_id: &str) {
+    let Some(preset) = assigned_preset(store, client_id) else {
+        store.applied.remove(client_id);
+        return;
+    };
+    let mut text = read_client_cfgs(app, client_id).unwrap_or_default();
+    text.push('\n');
+    for line in preset_applied_lines(preset) {
+        text.push_str(line);
+        text.push('\n');
+    }
+    let record = AppliedPreset { preset_id: preset.id.clone(), at: now_secs(), lines: preset_lines_from_text(&text) };
+    store.applied.insert(client_id.to_string(), record);
+}
+
+// What a client's launch gets on top of its usual arguments. Takes back
+// in-game changes and rewrites the file first, so a launch always runs the
+// preset as it is now.
+fn shared_settings_args(app: &tauri::AppHandle, client_id: &str) -> Vec<String> {
+    let mut store = load_presets(app);
+    absorb_in_game_changes(app, &mut store, client_id);
+    let args = match write_shared_cfg(app, &store, client_id) {
+        Ok(n) if n > 0 => {
+            record_applied_preset(app, &mut store, client_id);
+            vec!["+exec".to_string(), SHARED_CFG_NAME.to_string()]
+        }
+        _ => {
+            store.applied.remove(client_id);
+            Vec::new()
+        }
+    };
+    let _ = save_presets(app, &store);
+    args
 }
 
 #[derive(serde::Serialize)]
@@ -3136,4 +3306,5 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+
 

@@ -1859,7 +1859,7 @@ function renderConfigView(mainEl) {
     </div>
     <p class="detail-status" id="config-status">${escapeHtml(configStatus)}</p>
     <div class="preset-list">${listHtml}</div>
-    <p class="detail-status preset-note">A client uses one preset at a time; applying one takes it off whichever preset had it. Launching from here always writes the preset first. For a client you start some other way, run <code>exec launcher_shared.cfg</code> in its console.</p>
+    <p class="detail-status preset-note">A client uses one preset at a time; applying one takes it off whichever preset had it. Launching from here always writes the preset first, after saving anything you changed in-game since into it. For a client you start some other way, run <code>exec launcher_shared.cfg</code> in its console.</p>
   `;
 }
 
