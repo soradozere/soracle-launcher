@@ -663,7 +663,7 @@ async function loadActivityFeed() {
     activityFeedError = String(err);
   }
   activityFeedLoading = false;
-  if (selected === "__ctf__") renderMain();
+  if (selected === "__ctf__") scheduleMainRender();
 }
 
 async function loadRecentVideos() {
@@ -678,7 +678,7 @@ async function loadRecentVideos() {
     recentVideos = [];
   }
   recentVideosLoading = false;
-  if (selected === "__ctf__") renderMain();
+  if (selected === "__ctf__") scheduleMainRender();
 }
 
 function recentVideoCardHtml(video) {
@@ -1010,7 +1010,7 @@ async function loadServerStatus(address) {
   }
   // Re-render wherever this result is actually shown, regardless of which
   // view triggered the load in the first place.
-  if (selected === "__home__" || selected === "__ctf__" || selected === "__servers__") renderMain();
+  if (selected === "__home__" || selected === "__ctf__" || selected === "__servers__") scheduleMainRender();
 }
 
 async function joinServer(clientName, address) {
@@ -1172,6 +1172,23 @@ function renderMainPreservingScroll() {
   const scrollTop = mainEl.scrollTop;
   renderMain();
   mainEl.scrollTop = scrollTop;
+}
+
+// For results that arrive on their own schedule - server replies, feeds,
+// stats. Fourteen server replies landing over a few hundred ms used to mean
+// fourteen full rebuilds of the page. Now the first shows straight away and
+// the rest share one rebuild every 250ms, scroll position kept.
+const MAIN_RENDER_INTERVAL_MS = 250;
+let mainRenderTimer = null;
+let lastMainRender = 0;
+function scheduleMainRender() {
+  if (mainRenderTimer) return;
+  const wait = Math.max(0, MAIN_RENDER_INTERVAL_MS - (performance.now() - lastMainRender));
+  mainRenderTimer = setTimeout(() => {
+    mainRenderTimer = null;
+    lastMainRender = performance.now();
+    renderMainPreservingScroll();
+  }, wait);
 }
 
 async function addPk3Mods() {
@@ -2012,7 +2029,7 @@ async function loadStats(mod, name) {
   } catch (err) {
     statsCache[name] = { error: String(err) };
   }
-  if (selected === mod.name || selected === "__ctf__") renderMain();
+  if (selected === mod.name || selected === "__ctf__") scheduleMainRender();
 }
 
 const releaseCache = {}; // "owner/repo" -> release data, null (no releases), or { error }

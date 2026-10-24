@@ -445,16 +445,31 @@ fn clear_folder_override(app: &tauri::AppHandle, mod_id: &str) -> Result<(), Str
     std::fs::write(path, serde_json::to_string_pretty(&doc).unwrap()).map_err(|e| e.to_string())
 }
 
-fn find_jk2_install(app: &tauri::AppHandle, mod_id: Option<&str>) -> Result<std::path::PathBuf, String> {
-    if let Some(dir) = load_folder_override(app, mod_id) {
-        return Ok(dir);
+// Where Steam has JK2, found once and kept: steamlocate re-reads Steam's
+// library files every call, and this is asked on every path the launcher
+// resolves - a page of Media thumbnails alone asked hundreds of times. Only
+// a successful find is kept, so installing the game while the launcher is
+// open still gets noticed on the next ask.
+static STEAM_JK2_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+fn steam_jk2_install() -> Result<std::path::PathBuf, String> {
+    if let Some(dir) = STEAM_JK2_DIR.get() {
+        return Ok(dir.clone());
     }
     let steam_dir = steamlocate::locate().map_err(|e| format!("Steam not found: {e}"))?;
     let (app_entry, library) = steam_dir
         .find_app(JK2_STEAM_APP_ID)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Jedi Knight II isn't installed via Steam, or wasn't found in any library.".to_string())?;
-    Ok(library.resolve_app_dir(&app_entry))
+    let dir = library.resolve_app_dir(&app_entry);
+    Ok(STEAM_JK2_DIR.get_or_init(|| dir).clone())
+}
+
+fn find_jk2_install(app: &tauri::AppHandle, mod_id: Option<&str>) -> Result<std::path::PathBuf, String> {
+    if let Some(dir) = load_folder_override(app, mod_id) {
+        return Ok(dir);
+    }
+    steam_jk2_install()
 }
 
 #[tauri::command]

@@ -173,15 +173,31 @@ async function init() {
   scene.add(group);
 
   // --- animate: spin, plus the blade's live-flame width jitter ---
+  // Stops while the window is hidden (behind a running game, minimised) -
+  // a spinning emblem nobody can see is pure GPU time. The delta is capped
+  // so coming back doesn't whip the emblem round by however long it was
+  // away.
   const clock = new THREE.Clock();
+  let animating = false;
   function animate() {
+    if (document.hidden) {
+      animating = false;
+      return;
+    }
     requestAnimationFrame(animate);
-    const delta = clock.getDelta();
+    const delta = Math.min(clock.getDelta(), 0.1);
     group.rotation.y += delta * 0.7;
     blade.scale.x = 1 + (Math.random() - 0.5) * 0.06;
     renderer.render(scene, camera);
   }
-  animate();
+  function startAnimating() {
+    if (animating || document.hidden) return;
+    animating = true;
+    clock.getDelta();
+    animate();
+  }
+  document.addEventListener("visibilitychange", startAnimating);
+  startAnimating();
 }
 
 init();
