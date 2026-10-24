@@ -610,8 +610,9 @@ button.change-folder:hover {
   transition: border-color 0.2s, box-shadow 0.2s;
 }
 
-/* The art sits a little dimmed and desaturated until the pointer is over
-   the banner, which brings it up to full and lights the border. */
+/* The art sits under a blue wash - the launcher's own palette - until the
+   pointer is over the banner, which lifts the wash, brings the art up to
+   full colour and lights the border. */
 .mode-banner:hover {
   border-color: var(--primary-dim);
   box-shadow: 0 0 18px rgba(102, 252, 241, 0.35), inset 0 0 0 1px rgba(102, 252, 241, 0.25);
@@ -623,12 +624,30 @@ button.change-folder:hover {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  filter: saturate(0.7) brightness(0.8);
-  transition: filter 0.25s;
+  filter: brightness(0.85);
+  transition: filter 0.3s;
+}
+
+/* The wash: a "color" blend keeps the art's light and shade and swaps its
+   hues for this blue. Sits between the art and the bottom gradient. */
+.mode-banner::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: #3a8dc7;
+  mix-blend-mode: color;
+  opacity: 0.85;
+  transition: opacity 0.3s;
+  pointer-events: none;
 }
 
 .mode-banner:hover .mode-banner-img {
   filter: none;
+}
+
+.mode-banner:hover::after {
+  opacity: 0;
 }
 
 /* Darkens just the bottom strip so the title always reads, whatever's in
