@@ -1507,12 +1507,20 @@ function showTextDialog({ title, label, value, confirmLabel = "Save", multiline 
   });
 }
 
+// "Preset 1", "Preset 2", ... - the lowest number not already taken.
+function nextPresetName() {
+  const taken = new Set(configView.presets.map((p) => p.name.toLowerCase()));
+  for (let n = 1; ; n++) {
+    if (!taken.has(`preset ${n}`)) return `Preset ${n}`;
+  }
+}
+
 async function savePresetFromClient(clientId) {
   const { invoke } = window.__TAURI__.core;
   const view = await showTextDialog({
     title: `Save from ${clientLabel(clientId)}`,
     label: "Preset name",
-    value: `${clientLabel(clientId)} settings`,
+    value: nextPresetName(),
     submit: (name) => invoke("save_preset_from_client", { clientId, name }),
   });
   if (!view) return;

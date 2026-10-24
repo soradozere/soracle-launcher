@@ -2102,6 +2102,14 @@ fn find_preset_mut<'a>(store: &'a mut ConfigPresetStore, id: &str) -> Result<&'a
     store.presets.iter_mut().find(|p| p.id == id).ok_or_else(|| "That preset no longer exists".to_string())
 }
 
+// "Preset 1", "Preset 2", ... - the lowest number not already taken.
+fn next_preset_name(store: &ConfigPresetStore) -> String {
+    (1..)
+        .map(|n| format!("Preset {n}"))
+        .find(|candidate| !store.presets.iter().any(|p| p.name.eq_ignore_ascii_case(candidate)))
+        .unwrap()
+}
+
 fn clean_preset_name(name: &str) -> Result<String, String> {
     let name = name.trim();
     if name.is_empty() {
@@ -2154,12 +2162,11 @@ async fn import_config_preset(app: tauri::AppHandle) -> Result<Option<ConfigView
         return Err("That file has no binds or settings in it".to_string());
     }
     let filename = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "config.cfg".to_string());
-    let stem = path.file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "Imported".to_string());
     let now = now_secs();
     let mut store = load_presets(&app);
     store.presets.push(ConfigPreset {
         id: new_preset_id(),
-        name: clean_preset_name(&stem)?,
+        name: next_preset_name(&store),
         origin: format!("Imported from {filename}"),
         source_client: None,
         created: now,
