@@ -32,22 +32,86 @@ fn resign_app_bundle(app_bundle: &std::path::Path) -> Result<(), String> {
 #[tauri::command]
 fn extract_nwh(app: tauri::AppHandle) -> Result<String, String> {
     let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let archive_path = app_data.join("nwh_linux_x64.tar.gz");
     let dest = app_data.join("extracted").join("nwh");
 
-    // Real archive wraps everything in one top-level folder (confirmed by
-    // hand: nwh_linux_x64/{base,nwh,nwhmp,nwhmenu.qvm}) - cleared first so a
-    // future release that renames that folder (same moving-target risk as
-    // Tommyternal's git-commit-named one) can't leave two behind for
-    // find_single_subdir to choke on.
+    // Every platform's package ends up wrapped in one top-level folder
+    // (resolve_nwh_install relies on that) - cleared first so a release that
+    // renames it can't leave two behind for find_single_subdir to choke on.
     let _ = std::fs::remove_dir_all(&dest);
 
-    let file = std::fs::File::open(&archive_path).map_err(|e| e.to_string())?;
-    let gz = flate2::read::GzDecoder::new(file);
-    let mut archive = tar::Archive::new(gz);
-    archive.unpack(&dest).map_err(|e| e.to_string())?;
+    if cfg!(target_os = "macos") {
+        let bundle_dir = dest.join("nwh_macos");
+        extract_nwh_macos(&app_data.join("nwh_macos_arm64.zip"), &bundle_dir)?;
+        // Same ad-hoc re-sign as OpenJO's bundle: leaving out the package's
+        // "._" files (see extract_nwh_macos) breaks its original resource
+        // seal, and a fresh signature over what's actually on disk is all
+        // macOS needs to run it.
+        resign_app_bundle(&bundle_dir.join("NWH.app"))?;
+    } else if cfg!(target_os = "windows") {
+        // nwh_windows_x64/{base,nwh,nwhmp.exe,nwhmenu.qvm,OpenAL32.dll,SDL2.dll}
+        let file = std::fs::File::open(app_data.join("nwh_windows_x64.zip")).map_err(|e| e.to_string())?;
+        zip::ZipArchive::new(file).map_err(|e| e.to_string())?.extract(&dest).map_err(|e| e.to_string())?;
+    } else {
+        // nwh_linux_x64/{base,nwh,nwhmp,nwhmenu.qvm}
+        let file = std::fs::File::open(app_data.join("nwh_linux_x64.tar.gz")).map_err(|e| e.to_string())?;
+        tar::Archive::new(flate2::read::GzDecoder::new(file)).unpack(&dest).map_err(|e| e.to_string())?;
+    }
 
     Ok(format!("Extracted to {}", dest.display()))
+}
+
+// jk2ctf.com/nwh-download's macOS build is a zip inside a zip, the inner one
+// holding NWH.app. It was zipped in Finder, so it also carries AppleDouble
+// "._" files beside the real ones - skipped here: they aren't real files,
+// and a "._nwh-bins.pk3" is something the game would try to load as a pak.
+fn extract_nwh_macos(archive: &std::path::Path, dest: &std::path::Path) -> Result<(), String> {
+    use std::io::Read;
+    let is_metadata = |path: &std::path::Path| {
+        path.components().any(|c| {
+            let name = c.as_os_str().to_string_lossy();
+            name.starts_with("._") || name == "__MACOSX"
+        })
+    };
+
+    let file = std::fs::File::open(archive).map_err(|e| e.to_string())?;
+    let mut outer = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+    let inner_name = outer
+        .file_names()
+        .find(|n| n.ends_with(".zip") && !is_metadata(std::path::Path::new(n)))
+        .map(str::to_string)
+        .ok_or_else(|| "The macOS NWH package has no NWH.app archive inside it".to_string())?;
+    let mut inner_bytes = Vec::new();
+    outer
+        .by_name(&inner_name)
+        .map_err(|e| e.to_string())?
+        .read_to_end(&mut inner_bytes)
+        .map_err(|e| e.to_string())?;
+
+    let mut inner = zip::ZipArchive::new(std::io::Cursor::new(inner_bytes)).map_err(|e| e.to_string())?;
+    for i in 0..inner.len() {
+        let mut entry = inner.by_index(i).map_err(|e| e.to_string())?;
+        // enclosed_name refuses any entry that would land outside dest.
+        let Some(relative) = entry.enclosed_name() else { continue };
+        if is_metadata(&relative) {
+            continue;
+        }
+        let out = dest.join(&relative);
+        if entry.is_dir() {
+            std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+            continue;
+        }
+        if let Some(parent) = out.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let mut out_file = std::fs::File::create(&out).map_err(|e| e.to_string())?;
+        std::io::copy(&mut entry, &mut out_file).map_err(|e| e.to_string())?;
+        // Keeps the executable bit on the game binary.
+        #[cfg(unix)]
+        if let Some(mode) = entry.unix_mode() {
+            std::fs::set_permissions(&out, std::fs::Permissions::from_mode(mode)).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -658,8 +722,15 @@ fn client_binary_name(mod_id: &str) -> Option<&'static str> {
                 "jk2mvmp"
             }
         }
-        // Linux-only build, so no per-OS split to make here.
-        NWH_MOD_ID => "nwhmp",
+        NWH_MOD_ID => {
+            if cfg!(target_os = "macos") {
+                "NWH.app"
+            } else if cfg!(target_os = "windows") {
+                "nwhmp.exe"
+            } else {
+                "nwhmp"
+            }
+        }
         _ => return None,
     })
 }
@@ -957,27 +1028,30 @@ fn uninstall_nwh(app: tauri::AppHandle) -> Result<String, String> {
     uninstall_mod(NWH_MOD_ID, &game_root)
 }
 
-// NWH only ships a Linux build (see the manifest/FAQ) - nwhmp is a native
-// ELF binary, so this is never reachable on macOS/Windows regardless; the
-// frontend already only offers Install/Play for it when currentPlatform is
-// "linux" (see modSupportedOnCurrentPlatform in main.js).
+// NWH runs out of its own "nwh" game folder (its config lands in nwh/), so
+// unlike the other clients it's never pointed at a launchermods_ folder with
+// fs_game - that would switch its own client code off. Its PK3 mods go where
+// it already looks instead (see nwh_mod_dir).
 #[tauri::command]
 fn play_nwh(app: tauri::AppHandle, connect_address: Option<String>) -> Result<String, String> {
     let (_, game_root) = find_jk2_base_and_root(&app, Some(NWH_MOD_ID))?;
-    let binary = game_root.join(client_binary_name(NWH_MOD_ID).unwrap());
-    let mut cmd = std::process::Command::new(&binary);
-    cmd.current_dir(&game_root);
-    if client_has_pk3_mods(&game_root, NWH_MOD_ID) {
-        cmd.args(["+set", "fs_game", &client_mod_folder_name(NWH_MOD_ID)]);
+    let mut args = nwh_launch_args(&game_root);
+    if let Some(address) = connect_address {
+        args.extend(["+connect".to_string(), address]);
     }
-    if let Some(address) = &connect_address {
-        cmd.args(["+connect", address]);
+    spawn_client(&game_root, NWH_MOD_ID, &args)
+}
+
+// What every NWH start needs, whatever it's starting into (play_nwh,
+// play_demo). NWH.app keeps its own data inside the bundle and only takes the
+// retail paks (assets0-5) from the game folder, via fs_assetspath. It finds a
+// stock Steam install on its own; passing the folder covers every other setup.
+fn nwh_launch_args(game_root: &std::path::Path) -> Vec<String> {
+    if cfg!(target_os = "macos") {
+        vec!["+set".to_string(), "fs_assetspath".to_string(), game_root.to_string_lossy().to_string()]
+    } else {
+        Vec::new()
     }
-    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
-    std::thread::spawn(move || {
-        let _ = child.wait();
-    });
-    Ok(format!("Launched {}", binary.display()))
 }
 
 fn resolve_tommyternal_install(
@@ -1259,6 +1333,30 @@ struct Pk3Mod {
     filename: String,
     #[serde(default)]
     targets: Vec<String>,
+    // When it was added, in Unix seconds - the Mods view lists newest first.
+    // 0 for entries from before this was tracked, until list_pk3_mods
+    // backfills them (see added_time).
+    #[serde(default)]
+    added: u64,
+}
+
+fn unix_secs(time: std::time::SystemTime) -> u64 {
+    time.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+fn now_secs() -> u64 {
+    unix_secs(std::time::SystemTime::now())
+}
+
+// Best guess at when a file arrived: its creation time where the filesystem
+// keeps one (macOS, Windows), else when it was last written - for a PK3
+// nobody edits, that's when it was copied or downloaded.
+fn added_time(path: &std::path::Path) -> u64 {
+    std::fs::metadata(path)
+        .ok()
+        .and_then(|m| m.created().or_else(|_| m.modified()).ok())
+        .map(unix_secs)
+        .unwrap_or(0)
 }
 
 fn pk3_library_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
@@ -1329,16 +1427,83 @@ fn pk3_target_dests(
     filename: &str,
 ) -> Vec<std::path::PathBuf> {
     if target == PK3_ALL_TARGET {
-        all_game_roots(app)
+        let mut dests: Vec<std::path::PathBuf> = all_game_roots(app)
             .into_iter()
             .map(|(base_dir, _)| base_dir.join(filename))
-            .collect()
+            .collect();
+        // NWH.app takes only the retail paks from the game folder, so on
+        // macOS "All Clients" has to reach NWH's own folder as well - once
+        // NWH is actually there to use it.
+        if cfg!(target_os = "macos") {
+            if let Some(dir) = nwh_mod_dir(app).filter(|d| d.is_dir() || nwh_installed(app)) {
+                dests.push(dir.join(filename));
+            }
+        }
+        dests
     } else {
-        find_jk2_base_and_root(app, Some(target))
-            .ok()
-            .map(|(_, game_root)| vec![client_mod_folder(&game_root, target).join(filename)])
-            .unwrap_or_default()
+        client_pk3_dir(app, target).map(|dir| vec![dir.join(filename)]).unwrap_or_default()
     }
+}
+
+// The folder PK3s aimed at just one client go into - one only that client
+// loads.
+fn client_pk3_dir(app: &tauri::AppHandle, client_id: &str) -> Option<std::path::PathBuf> {
+    if client_id == NWH_MOD_ID {
+        return nwh_mod_dir(app);
+    }
+    find_jk2_base_and_root(app, Some(client_id))
+        .ok()
+        .map(|(_, game_root)| client_mod_folder(&game_root, client_id))
+}
+
+// NWH keeps its own "nwh" game folder active (see play_nwh), so its PK3s go
+// where it already looks. The Linux and Windows builds are portable - they
+// run and save in the game folder, so that's game folder/nwh. The macOS
+// NWH.app keeps its game data inside the bundle (which can't be written to
+// without breaking its signature) and saves to Application Support/NWHClient,
+// whose base/ it always loads.
+fn nwh_mod_dir(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    if cfg!(target_os = "macos") {
+        return app.path().data_dir().ok().map(|d| d.join("NWHClient").join("base"));
+    }
+    find_jk2_base_and_root(app, Some(NWH_MOD_ID)).ok().map(|(_, game_root)| game_root.join("nwh"))
+}
+
+fn nwh_installed(app: &tauri::AppHandle) -> bool {
+    find_jk2_base_and_root(app, Some(NWH_MOD_ID))
+        .map(|(_, game_root)| installed_status(NWH_MOD_ID, &game_root).installed)
+        .unwrap_or(false)
+}
+
+// Everything a client install put in place, as full paths - so a client's own
+// paks (NWH's nwh-bins.pk3, say) are never mistaken for mods sitting beside them.
+fn installed_client_files(game_root: &std::path::Path, client_id: &str) -> std::collections::HashSet<std::path::PathBuf> {
+    load_installed_mods(game_root)
+        .remove(client_id)
+        .map(|record| record.paths.into_iter().map(|p| game_root.join(p)).collect())
+        .unwrap_or_default()
+}
+
+// NWH's PK3s used to go to launchermods_nwh, switched on with fs_game - which
+// also switched NWH's own nwh/ folder off. Moves anything left there to where
+// NWH looks now.
+fn migrate_legacy_nwh_mods(app: &tauri::AppHandle) {
+    let (Some(new_dir), Ok((_, game_root))) = (nwh_mod_dir(app), find_jk2_base_and_root(app, Some(NWH_MOD_ID))) else {
+        return;
+    };
+    let old_dir = client_mod_folder(&game_root, NWH_MOD_ID);
+    let names = list_pk3_filenames(&old_dir);
+    if names.is_empty() {
+        return;
+    }
+    let _ = std::fs::create_dir_all(&new_dir);
+    for name in names {
+        let (from, to) = (old_dir.join(&name), new_dir.join(&name));
+        if std::fs::rename(&from, &to).is_err() && std::fs::copy(&from, &to).is_ok() {
+            let _ = std::fs::remove_file(&from);
+        }
+    }
+    let _ = std::fs::remove_dir(&old_dir); // only goes if it's now empty
 }
 
 fn deploy_pk3_to_targets(
@@ -1423,10 +1588,15 @@ fn reconcile_pk3_mods_with_disk(
         }
     }
     for client_id in PK3_CLIENT_IDS {
-        let Ok((_, game_root)) = find_jk2_base_and_root(app, Some(client_id)) else { continue };
-        let folder = client_mod_folder(&game_root, client_id);
+        let (Some(folder), Ok((_, game_root))) = (client_pk3_dir(app, client_id), find_jk2_base_and_root(app, Some(client_id))) else {
+            continue;
+        };
+        let shipped = installed_client_files(&game_root, client_id);
         for filename in list_pk3_filenames(&folder) {
             let path = folder.join(&filename);
+            if shipped.contains(&path) {
+                continue;
+            }
             found.entry(filename).or_insert((Vec::new(), path)).0.push(client_id.to_string());
         }
     }
@@ -1448,7 +1618,10 @@ fn reconcile_pk3_mods_with_disk(
                     }
                 }
             }
-            None => mods.push(Pk3Mod { filename, targets }),
+            None => {
+                let added = added_time(&source_path);
+                mods.push(Pk3Mod { filename, targets, added });
+            }
         }
     }
     Ok(())
@@ -1457,9 +1630,17 @@ fn reconcile_pk3_mods_with_disk(
 #[tauri::command]
 fn list_pk3_mods(app: tauri::AppHandle) -> Result<Vec<Pk3Mod>, String> {
     let (_, game_root) = find_jk2_base_and_root(&app, None)?;
+    migrate_legacy_nwh_mods(&app);
     let mut mods = load_pk3_mods(&game_root);
     reconcile_pk3_mods_with_disk(&app, &mut mods)?;
+    // Entries from before `added` existed get dated once from their library
+    // copy, then keep that date.
+    let library_dir = pk3_library_dir(&app)?;
+    for m in mods.iter_mut().filter(|m| m.added == 0) {
+        m.added = added_time(&library_dir.join(&m.filename));
+    }
     save_pk3_mods(&game_root, &mods)?;
+    mods.sort_by(|a, b| b.added.cmp(&a.added).then_with(|| a.filename.cmp(&b.filename)));
     Ok(mods)
 }
 
@@ -1498,14 +1679,25 @@ fn add_pk3_mod_from_path(app: &tauri::AppHandle, source: &std::path::Path) -> Re
 
     let library_dir = pk3_library_dir(app)?;
     std::fs::create_dir_all(&library_dir).map_err(|e| e.to_string())?;
-    std::fs::copy(source, library_dir.join(&filename)).map_err(|e| e.to_string())?;
+    let library_path = library_dir.join(&filename);
+    std::fs::copy(source, &library_path).map_err(|e| e.to_string())?;
 
+    // A new mod goes to All Clients straight away - picking clients is for
+    // narrowing it down, not a step needed before it does anything. Adding
+    // one that's already tracked keeps whatever it was set to, but refreshes
+    // the copies the clients load, in case this is a newer version of it.
     let (_, game_root) = find_jk2_base_and_root(app, None)?;
     let mut mods = load_pk3_mods(&game_root);
-    if !mods.iter().any(|m| m.filename == filename) {
-        mods.push(Pk3Mod { filename: filename.clone(), targets: Vec::new() });
-        save_pk3_mods(&game_root, &mods)?;
-    }
+    let targets = match mods.iter().find(|m| m.filename == filename) {
+        Some(existing) => existing.targets.clone(),
+        None => {
+            let targets = vec![PK3_ALL_TARGET.to_string()];
+            mods.push(Pk3Mod { filename: filename.clone(), targets: targets.clone(), added: now_secs() });
+            save_pk3_mods(&game_root, &mods)?;
+            targets
+        }
+    };
+    deploy_pk3_to_targets(app, &library_path, &filename, &targets)?;
     Ok(filename)
 }
 
@@ -1569,6 +1761,409 @@ fn remove_pk3_mod(app: tauri::AppHandle, filename: String) -> Result<(), String>
         std::fs::remove_file(&library_path).map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+// --- Media: screenshots and demos -------------------------------------------
+// A client doesn't save these in one predictable place. It writes into
+// whichever game dir is active (base/, or its launchermods_ folder once it
+// has PK3s, or its own built-in mod folder), and an "installed" (non-
+// portable) build writes under its fs_homepath instead of the game folder at
+// all - JK2MV's own source puts that at ~/Library/Application Support/jk2mv
+// on macOS, ~/.jk2mv on Linux and Documents\jk2mv on Windows. So rather than
+// predict where the next one will land, every folder one *could* be in gets
+// looked at.
+
+#[derive(Clone, Copy, PartialEq)]
+enum MediaKind {
+    Screenshot,
+    Demo,
+}
+
+impl MediaKind {
+    fn subdir(self) -> &'static str {
+        match self {
+            MediaKind::Screenshot => "screenshots",
+            MediaKind::Demo => "demos",
+        }
+    }
+
+    fn extensions(self) -> &'static [&'static str] {
+        match self {
+            MediaKind::Screenshot => &["jpg", "jpeg", "png", "tga"],
+            // dm_15 = 1.02, dm_16 = 1.04 - the only two protocols JK2 has.
+            MediaKind::Demo => &["dm_15", "dm_16"],
+        }
+    }
+
+    fn matches(self, path: &std::path::Path) -> bool {
+        path.extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| self.extensions().contains(&e.to_ascii_lowercase().as_str()))
+    }
+}
+
+// Where a client keeps its fs_homepath. Only folders that exist are
+// returned, so guessing generously here costs nothing - OpenJO's macOS one
+// is confirmed first-hand, JK2MV's from its source, the rest follow the same
+// conventions.
+fn client_home_dirs(app: &tauri::AppHandle, client_id: &str) -> Vec<std::path::PathBuf> {
+    let names: &[&str] = match client_id {
+        JK2MV_MOD_ID => &["jk2mv"],
+        TOMMYTERNAL_MOD_ID => &["eternaljk2mv"],
+        OPENJO_MOD_ID => &["OpenJO", "openjo"],
+        NWH_MOD_ID => &["NWHClient"],
+        _ => &[],
+    };
+    let paths = app.path();
+    let data = paths.data_dir().ok();
+    let docs = paths.document_dir().ok();
+    let home = paths.home_dir().ok();
+    let mut dirs = Vec::new();
+    for name in names {
+        dirs.extend(data.as_ref().map(|d| d.join(name)));
+        dirs.extend(home.as_ref().map(|h| h.join(format!(".{name}"))));
+        dirs.extend(docs.as_ref().map(|d| d.join(name)));
+        dirs.extend(docs.as_ref().map(|d| d.join("My Games").join(name)));
+    }
+    dirs.retain(|d| d.is_dir());
+    dirs
+}
+
+// Game dirs inside a shared game folder that belong to one client only - a
+// screenshot in launchermods_jk2mv/ is JK2MV's, never OpenJO's, even though
+// both clients point at the same game folder.
+fn game_dir_owner(dir_name: &str) -> Option<&'static str> {
+    PK3_CLIENT_IDS
+        .iter()
+        .find(|id| client_mod_folder_name(id) == dir_name)
+        .copied()
+        .or(match dir_name {
+            "eternaljk2" => Some(TOMMYTERNAL_MOD_ID),
+            "nwh" => Some(NWH_MOD_ID),
+            _ => None,
+        })
+}
+
+fn subdirs(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    std::fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.is_dir())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+// Every existing screenshots/ or demos/ folder, paired with the clients that
+// could have written into it. More than one client per folder is normal:
+// base/ in a game folder several clients share belongs to all of them.
+fn media_dirs(app: &tauri::AppHandle, kind: MediaKind) -> Vec<(std::path::PathBuf, Vec<String>)> {
+    let mut found: Vec<(std::path::PathBuf, Vec<String>)> = Vec::new();
+    let mut add = |dir: std::path::PathBuf, client: &str| {
+        // Canonicalizing both skips folders that don't exist and folds
+        // together two routes to the same place (case-insensitive
+        // filesystems, symlinked Steam libraries).
+        let Ok(dir) = dir.canonicalize() else { return };
+        match found.iter_mut().find(|(d, _)| *d == dir) {
+            Some((_, clients)) if !clients.iter().any(|c| c == client) => clients.push(client.to_string()),
+            Some(_) => {}
+            None => found.push((dir, vec![client.to_string()])),
+        }
+    };
+    for client in PK3_CLIENT_IDS {
+        // OpenJO is single-player, which has no demo recording.
+        if kind == MediaKind::Demo && client == OPENJO_MOD_ID {
+            continue;
+        }
+        for home in client_home_dirs(app, client) {
+            for game_dir in subdirs(&home) {
+                add(game_dir.join(kind.subdir()), client);
+            }
+        }
+        // NWH.app on macOS never reads or writes the game folder's own dirs -
+        // only NWHClient (scanned above) - so a demo in base/ there isn't one
+        // it could play.
+        if cfg!(target_os = "macos") && client == NWH_MOD_ID {
+            continue;
+        }
+        if let Ok((_, game_root)) = find_jk2_base_and_root(app, Some(client)) {
+            // A shared dir like base/ only counts for clients actually in
+            // this folder. A client's own dir counts whether or not it's
+            // still installed - uninstalling leaves player data behind.
+            let installed_here = client_binary_name(client).is_some_and(|b| game_root.join(b).exists());
+            for game_dir in subdirs(&game_root) {
+                let owner = game_dir.file_name().and_then(|n| n.to_str()).and_then(game_dir_owner);
+                let counts = match owner {
+                    Some(owner) => owner == client,
+                    None => installed_here,
+                };
+                if counts {
+                    add(game_dir.join(kind.subdir()), client);
+                }
+            }
+        }
+    }
+    found
+}
+
+#[derive(serde::Serialize)]
+struct MediaItem {
+    path: String,
+    name: String,
+    kind: &'static str,
+    clients: Vec<String>,
+    size: u64,
+    modified: u64,
+    width: Option<u32>,
+    height: Option<u32>,
+}
+
+fn list_media_blocking(app: &tauri::AppHandle) -> Vec<MediaItem> {
+    let mut items = Vec::new();
+    for kind in [MediaKind::Screenshot, MediaKind::Demo] {
+        for (dir, clients) in media_dirs(app, kind) {
+            let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+            for path in entries.filter_map(|e| e.ok()).map(|e| e.path()) {
+                if !kind.matches(&path) {
+                    continue;
+                }
+                let Ok(meta) = path.metadata() else { continue };
+                if !meta.is_file() {
+                    continue;
+                }
+                let modified = meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                // Reads the header only, not the whole image.
+                let dims = (kind == MediaKind::Screenshot)
+                    .then(|| image::image_dimensions(&path).ok())
+                    .flatten();
+                items.push(MediaItem {
+                    name: path.file_name().unwrap_or_default().to_string_lossy().to_string(),
+                    path: path.to_string_lossy().to_string(),
+                    kind: if kind == MediaKind::Screenshot { "screenshot" } else { "demo" },
+                    clients: clients.clone(),
+                    size: meta.len(),
+                    modified,
+                    width: dims.map(|d| d.0),
+                    height: dims.map(|d| d.1),
+                });
+            }
+        }
+    }
+    items.sort_by(|a, b| b.modified.cmp(&a.modified));
+    items
+}
+
+#[tauri::command]
+async fn list_media(app: tauri::AppHandle) -> Result<Vec<MediaItem>, String> {
+    tauri::async_runtime::spawn_blocking(move || list_media_blocking(&app))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+// Every path arrives back from the frontend, so none is trusted: it has to
+// be a screenshot or demo sitting directly in one of the folders list_media
+// scans, or nothing here will open, move or delete it.
+fn resolve_media_file(
+    app: &tauri::AppHandle,
+    path: &str,
+) -> Result<(std::path::PathBuf, MediaKind, Vec<String>), String> {
+    let file = std::path::Path::new(path)
+        .canonicalize()
+        .map_err(|_| format!("{path} no longer exists"))?;
+    let parent = file.parent().map(|p| p.to_path_buf());
+    for kind in [MediaKind::Screenshot, MediaKind::Demo] {
+        if !kind.matches(&file) {
+            continue;
+        }
+        if let Some((_, clients)) = media_dirs(app, kind).into_iter().find(|(d, _)| Some(d) == parent.as_ref()) {
+            return Ok((file, kind, clients));
+        }
+    }
+    Err(format!("{path} isn't a screenshot or demo the launcher manages"))
+}
+
+// Keyed on size and modified time as well as path, so a screenshot that's
+// overwritten in place (shot0001 again after a reinstall) gets a fresh
+// thumbnail rather than the old one.
+fn thumbnail_cache_path(app: &tauri::AppHandle, file: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    use std::hash::{Hash, Hasher};
+    let meta = file.metadata().map_err(|e| e.to_string())?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    file.hash(&mut hasher);
+    meta.len().hash(&mut hasher);
+    meta.modified().ok().hash(&mut hasher);
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("media_thumbs");
+    Ok(dir.join(format!("{:016x}.jpg", hasher.finish())))
+}
+
+fn media_thumbnail_blocking(app: &tauri::AppHandle, path: &str) -> Result<Vec<u8>, String> {
+    let (file, kind, _) = resolve_media_file(app, path)?;
+    if kind != MediaKind::Screenshot {
+        return Err("Only screenshots have thumbnails".to_string());
+    }
+    let cached = thumbnail_cache_path(app, &file)?;
+    if let Ok(bytes) = std::fs::read(&cached) {
+        return Ok(bytes);
+    }
+    let thumb = image::open(&file).map_err(|e| e.to_string())?.thumbnail(480, 300).to_rgb8();
+    let mut bytes = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 82)
+        .encode_image(&thumb)
+        .map_err(|e| e.to_string())?;
+    if let Some(dir) = cached.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(&cached, &bytes);
+    Ok(bytes)
+}
+
+#[tauri::command]
+async fn media_thumbnail(app: tauri::AppHandle, path: String) -> Result<tauri::ipc::Response, String> {
+    let bytes = tauri::async_runtime::spawn_blocking(move || media_thumbnail_blocking(&app, &path))
+        .await
+        .map_err(|e| e.to_string())??;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+// Full-size image for the viewer. JPEG and PNG go across untouched; TGA is
+// re-encoded as PNG, since no webview can display one.
+fn media_image_blocking(app: &tauri::AppHandle, path: &str) -> Result<Vec<u8>, String> {
+    let (file, kind, _) = resolve_media_file(app, path)?;
+    if kind != MediaKind::Screenshot {
+        return Err("Only screenshots can be viewed".to_string());
+    }
+    let is_tga = file.extension().is_some_and(|e| e.eq_ignore_ascii_case("tga"));
+    if !is_tga {
+        return std::fs::read(&file).map_err(|e| e.to_string());
+    }
+    let img = image::open(&file).map_err(|e| e.to_string())?;
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut bytes, image::ImageFormat::Png).map_err(|e| e.to_string())?;
+    Ok(bytes.into_inner())
+}
+
+#[tauri::command]
+async fn media_image(app: tauri::AppHandle, path: String) -> Result<tauri::ipc::Response, String> {
+    let bytes = tauri::async_runtime::spawn_blocking(move || media_image_blocking(&app, &path))
+        .await
+        .map_err(|e| e.to_string())??;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+#[tauri::command]
+fn reveal_media(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let (file, _, _) = resolve_media_file(&app, &path)?;
+    tauri_plugin_opener::reveal_item_in_dir(file).map_err(|e| e.to_string())
+}
+
+// To the system Trash/Recycle Bin, never deleted outright - a demo of a
+// match that can't be replayed is gone for good otherwise.
+#[tauri::command]
+fn trash_media(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let (file, _, _) = resolve_media_file(&app, &path)?;
+    if let Ok(cached) = thumbnail_cache_path(&app, &file) {
+        let _ = std::fs::remove_file(cached);
+    }
+    trash::delete(&file).map_err(|e| e.to_string())
+}
+
+// Keeps the extension (the protocol is in it) and allows no spaces: the
+// client's `demo` command takes its argument as one console token.
+#[tauri::command]
+fn rename_demo(app: tauri::AppHandle, path: String, new_name: String) -> Result<String, String> {
+    let (file, kind, _) = resolve_media_file(&app, &path)?;
+    if kind != MediaKind::Demo {
+        return Err("Only demos can be renamed".to_string());
+    }
+    let new_name = new_name.trim();
+    if new_name.is_empty()
+        || !new_name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    {
+        return Err("Use letters, numbers, dashes, underscores or dots only - no spaces".to_string());
+    }
+    let ext = file.extension().unwrap_or_default().to_string_lossy().to_string();
+    let target = file.with_file_name(format!("{new_name}.{ext}"));
+    if target.exists() {
+        return Err(format!("{new_name}.{ext} already exists"));
+    }
+    std::fs::rename(&file, &target).map_err(|e| e.to_string())?;
+    Ok(target.to_string_lossy().to_string())
+}
+
+// Launches a client with extra console arguments. Goes by the binary's
+// shape rather than a per-client special case: a macOS .app bundle has to go
+// through `open --args`, anything else runs straight from its game folder.
+fn spawn_client(game_root: &std::path::Path, mod_id: &str, args: &[String]) -> Result<String, String> {
+    let binary_name = client_binary_name(mod_id).ok_or_else(|| format!("Unknown client: {mod_id}"))?;
+    let binary = game_root.join(binary_name);
+    if !binary.exists() {
+        return Err(format!("{} isn't installed", binary.display()));
+    }
+    if binary_name.ends_with(".app") {
+        let mut cmd = std::process::Command::new("open");
+        cmd.arg(&binary);
+        if !args.is_empty() {
+            cmd.arg("--args");
+            cmd.args(args);
+        }
+        cmd.spawn().map_err(|e| e.to_string())?;
+        return Ok(format!("Launched {}", binary.display()));
+    }
+    let mut cmd = std::process::Command::new(&binary);
+    cmd.current_dir(game_root);
+    cmd.args(args);
+    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(format!("Launched {}", binary.display()))
+}
+
+#[tauri::command]
+fn play_demo(app: tauri::AppHandle, client_id: String, path: String) -> Result<String, String> {
+    let (file, kind, clients) = resolve_media_file(&app, &path)?;
+    if kind != MediaKind::Demo {
+        return Err("Not a demo".to_string());
+    }
+    // OpenJO is single-player and has no demo playback.
+    if client_id == OPENJO_MOD_ID || !clients.contains(&client_id) {
+        return Err(format!("{client_id} can't play this demo"));
+    }
+    let (_, game_root) = find_jk2_base_and_root(&app, Some(&client_id))?;
+
+    // The client looks for demos/<name> inside its active game dir (plus
+    // base/, which every game dir layers on top of). A demo in base/ plays
+    // with the usual launch, PK3 mods and all; one anywhere else needs that
+    // folder made the active game dir or the client won't find it.
+    let game_dir = file
+        .parent()
+        .and_then(|d| d.parent())
+        .and_then(|d| d.file_name())
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let mut args: Vec<String> = Vec::new();
+    if client_id == NWH_MOD_ID {
+        // NWH is never switched off its own nwh/ folder (see play_nwh) - and
+        // between that and base/, it already sees everywhere it records demos.
+        args.extend(nwh_launch_args(&game_root));
+    } else if game_dir != "base" {
+        args.extend(["+set".to_string(), "fs_game".to_string(), game_dir]);
+    } else if client_has_pk3_mods(&game_root, &client_id) {
+        args.extend(["+set".to_string(), "fs_game".to_string(), client_mod_folder_name(&client_id)]);
+    }
+    // A name with spaces (one renamed outside the launcher) only survives
+    // the client's own tokenizing if it's quoted.
+    let name = file.file_name().unwrap_or_default().to_string_lossy().to_string();
+    args.push("+demo".to_string());
+    args.push(if name.contains(' ') { format!("\"{name}\"") } else { name });
+    spawn_client(&game_root, &client_id, &args)
 }
 
 // --- Server browser: direct-connect + live status via the idTech3
@@ -1745,6 +2340,13 @@ pub fn run() {
             add_pk3_mod_from_download,
             set_pk3_mod_targets,
             remove_pk3_mod,
+            list_media,
+            media_thumbnail,
+            media_image,
+            reveal_media,
+            trash_media,
+            rename_demo,
+            play_demo,
             query_server_status
         ])
         .run(tauri::generate_context!())

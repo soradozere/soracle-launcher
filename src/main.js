@@ -45,15 +45,15 @@ const MOD_HANDLERS = {
     playCommand: "play_jk2mv",
     uninstallCommand: "uninstall_jk2mv",
   },
-  // Linux-only: NWH's own build is Linux-only, full stop (see the FAQ) -
-  // `platforms` restricts which OS this client is even offered on, unlike
-  // the other three above, which install everywhere and so never need it.
+  // Builds for all three now, from jk2ctf.com/nwh-download. The macOS one is
+  // Apple Silicon only, like this launcher's own macOS build.
   NWH: {
     modId: "nwh",
     filenames: {
+      macos: "nwh_macos_arm64.zip",
+      windows: "nwh_windows_x64.zip",
       linux: "nwh_linux_x64.tar.gz",
     },
-    platforms: ["linux"],
     extractCommand: "extract_nwh",
     installCommand: "install_nwh",
     checkInstalledCommand: "is_nwh_installed",
@@ -78,19 +78,17 @@ function modPlatformInfo(mod) {
   return mod.platforms[currentPlatform] ?? mod.platforms.macos ?? mod;
 }
 
-// A handler existing isn't enough on its own anymore - NWH has one but only
-// actually works on Linux (see MOD_HANDLERS.NWH.platforms). Everything else
-// has no `platforms` restriction at all, so this is a no-op for them.
+// A handler can carry `platforms` to limit which OS it's offered on (NWH
+// used to be Linux-only). None does right now, so this is true for every
+// client with a handler.
 function modSupportedOnCurrentPlatform(name) {
   const handler = MOD_HANDLERS[name];
   return !!handler && (!handler.platforms || handler.platforms.includes(currentPlatform));
 }
 
 // Only clients that actually speak the multiplayer protocol can join -
-// OpenJO is single-player only. NWH is added in init() once currentPlatform
-// is known, rather than listed here, since it only belongs in this list on
-// Linux at all.
-const JOINABLE_CLIENTS = ["TommyternalJK2MV", "JK2MV"];
+// OpenJO is single-player only.
+const JOINABLE_CLIENTS = ["TommyternalJK2MV", "JK2MV", "NWH"];
 
 // The Servers page used to discover this list live from the community
 // master server, but that discovery query proved unreliable (consistently
@@ -111,6 +109,7 @@ const KNOWN_SERVERS = [
   "54.238.175.102:28070", // NWH Tokyo
   "176.103.220.40:28072", // freedom duels
   "199.19.72.85:28070", // Dozer NY NWH
+  "208.167.239.201:28070", // NWH New Jersey
   "108.248.225.180:28070", // Saberology
 ];
 const FAVORITE_SERVERS_KEY = "jk2launcher.favoriteServers";
@@ -268,54 +267,49 @@ function toggleFavoriteServer(address) {
   return true;
 }
 
-// Two pinned one-click actions on Home, above the general favorites list -
-// covering the app's two actual use cases (organised CTF play, and casual
-// defrag) instead of making everyone pick a server every time. "auto" means
-// "whichever joinable client is actually installed" rather than a fixed
-// choice, so both buttons work the moment any client is installed instead
-// of depending on one specific client being present.
-const PINNED_ACTIONS_KEY = "jk2launcher.pinnedActions";
-const DEFAULT_PINNED_ACTIONS = {
-  ctf: { server: "192.223.24.74:28070", client: "NWH" }, // NA East
-  defrag: { server: "176.103.220.40:28070", client: "TommyternalJK2MV" }, // freedom defrag
-};
+// The four game modes on Home - one banner each, tied to the client that
+// plays it. `defaultServer` is what Play joins until someone picks their own
+// with the gear; null means Play just opens the game to its main menu.
+// Campaign is OpenJO's single-player, so it has no server at all.
+const GAME_MODES = [
+  { id: "ctf", title: "Capture the Flag (NWH)", client: "NWH", defaultServer: "192.223.24.74:28070" }, // NA East
+  { id: "defrag", title: "Defrag (Tommyternal)", client: "TommyternalJK2MV", defaultServer: "176.103.220.40:28070" }, // freedom defrag
+  { id: "ffa", title: "FFA (JK2MV)", client: "JK2MV", defaultServer: null },
+  { id: "campaign", title: "Campaign (OpenJO)", client: "OpenJO", singlePlayer: true },
+];
+const MODE_SERVERS_KEY = "jk2launcher.modeServers";
+const LEGACY_PINNED_ACTIONS_KEY = "jk2launcher.pinnedActions"; // the old Play CTF / Play Defrag buttons
 
-function loadPinnedActions() {
+// Servers picked with the old Play CTF / Play Defrag buttons carry over, so
+// nobody's choice is lost to the redesign.
+function loadModeServers() {
+  const servers = Object.fromEntries(
+    GAME_MODES.filter((m) => !m.singlePlayer).map((m) => [m.id, m.defaultServer])
+  );
   try {
-    const parsed = JSON.parse(localStorage.getItem(PINNED_ACTIONS_KEY) ?? "null");
-    return {
-      ctf: { ...DEFAULT_PINNED_ACTIONS.ctf, ...parsed?.ctf },
-      defrag: { ...DEFAULT_PINNED_ACTIONS.defrag, ...parsed?.defrag },
-    };
+    const legacy = JSON.parse(localStorage.getItem(LEGACY_PINNED_ACTIONS_KEY) ?? "null");
+    if (legacy?.ctf?.server) servers.ctf = legacy.ctf.server;
+    if (legacy?.defrag?.server) servers.defrag = legacy.defrag.server;
+    Object.assign(servers, JSON.parse(localStorage.getItem(MODE_SERVERS_KEY) ?? "null"));
   } catch {
-    return structuredClone(DEFAULT_PINNED_ACTIONS);
+    // Private-browsing-style storage block - defaults it is.
+  }
+  return servers;
+}
+
+let modeServers = loadModeServers();
+
+function saveModeServers() {
+  try {
+    localStorage.setItem(MODE_SERVERS_KEY, JSON.stringify(modeServers));
+  } catch {
+    // Private-browsing-style storage block - the pick just won't stick.
   }
 }
 
-let pinnedActions = loadPinnedActions();
-
-function savePinnedActions() {
-  try {
-    localStorage.setItem(PINNED_ACTIONS_KEY, JSON.stringify(pinnedActions));
-  } catch {
-    // Private-browsing-style storage block - the customization just won't stick.
-  }
-}
-
-function pinnedActionLabel(actionId) {
-  return actionId === "ctf" ? "Play CTF" : "Play Defrag";
-}
-
-// NWH (the client organised CTF actually runs on) is only ever in
-// JOINABLE_CLIENTS on Linux (its only supported platform - see the FAQ) -
-// elsewhere the default "NWH" pin just never matches an installed entry and
-// falls through to whatever else is actually installed, same as "auto"
-// would, with playPinnedAction's warning explaining why.
-function resolvePinnedAction(actionId) {
-  const pin = pinnedActions[actionId];
-  const installedJoinable = JOINABLE_CLIENTS.filter((name) => modState[name]?.installed);
-  const client = installedJoinable.includes(pin.client) ? pin.client : installedJoinable[0];
-  return { server: pin.server, client };
+// The client a mode's Play button uses, or null where it can't run.
+function modeClient(mode) {
+  return modSupportedOnCurrentPlatform(mode.client) ? mode.client : null;
 }
 
 function serverDisplayName(address) {
@@ -324,7 +318,7 @@ function serverDisplayName(address) {
 }
 
 // `name` is the MOD_HANDLERS key, so a target can be filtered out on a
-// platform that can't install that client at all (NWH is Linux-only).
+// platform that can't install that client at all.
 const PK3_CLIENTS = [
   { id: "jk2mv", label: "JK2MV", name: "JK2MV" },
   { id: "tommyternal", label: "TommyternalJK2MV", name: "TommyternalJK2MV" },
@@ -353,12 +347,12 @@ const FAQ_ENTRIES = [
   {
     section: "Launcher",
     q: "Which clients can I install?",
-    a: "JK2MV (the modernised engine most other clients build on), TomArrow's Tommyternal fork (defrag/FFA-focused), and OpenJO (a stability-focused rebuild of the single-player campaign). All three run natively on macOS, Windows, and Linux.",
+    a: "NWH (the anti-cheat client organised CTF runs on), JK2MV (the modernised engine most other clients build on), TomArrow's Tommyternal fork (defrag/FFA-focused), and OpenJO (a stability-focused rebuild of the single-player campaign). All four run natively on macOS, Windows, and Linux.",
   },
   {
     section: "Launcher",
     q: "What about NWH?",
-    a: 'NWH (Capture the Flag - NWH) is the anti-cheat client organised CTF matches actually run on, but its current build is Linux-only - this launcher can\'t install or run it on macOS or Windows yet.',
+    a: "NWH is the anti-cheat client organised CTF matches run on. Install it from its page under Clients - there are builds for macOS (Apple Silicon), Windows and Linux, the same ones offered at jk2ctf.com/nwh-download.",
   },
   {
     section: "Launcher",
@@ -477,22 +471,73 @@ async function downloadFile(url, filename, expectedSha256) {
   return { verified: actual.toLowerCase() === expectedSha256.toLowerCase(), actual };
 }
 
+// The Clients group in the sidebar folds open and shut, and remembers which.
+// Opening a client from anywhere else (a Home banner's Install, say) opens it
+// too, so the active client is never hidden inside a closed group.
+const CLIENTS_GROUP_OPEN_KEY = "jk2launcher.clientsGroupOpen";
+let clientsGroupOpen = (() => {
+  try {
+    return localStorage.getItem(CLIENTS_GROUP_OPEN_KEY) !== "0";
+  } catch {
+    return true;
+  }
+})();
+
+function setClientsGroupOpen(open) {
+  clientsGroupOpen = open;
+  try {
+    localStorage.setItem(CLIENTS_GROUP_OPEN_KEY, open ? "1" : "0");
+  } catch {
+    // Private-browsing-style storage block - it just won't be remembered.
+  }
+  renderSidebar();
+}
+
+// What a client's dot and tag say in the sidebar. The dot carries installed
+// or not; text only appears when it adds something.
+function clientRowStatus(mod) {
+  const state = modState[mod.name] || {};
+  if (!modSupportedOnCurrentPlatform(mod.name)) {
+    const only = MOD_HANDLERS[mod.name]?.platforms;
+    const names = { linux: "Linux", macos: "macOS", windows: "Windows" };
+    return { installed: false, title: "Not available on this platform", tag: only ? `${only.map((p) => names[p] ?? p).join("/")} only` : "unsupported" };
+  }
+  // Not checked yet (see refreshModStates) - don't claim either way.
+  if (modState[mod.name] === undefined) return { installed: false, checking: true, title: "Checking...", tag: "" };
+  if (!state.installed) return { installed: false, title: "Not installed", tag: "" };
+  const upToDate = state.installedVersion && state.installedVersion === mod.version;
+  return { installed: true, title: upToDate ? "Installed" : "Update available", tag: upToDate ? "" : "update" };
+}
+
 function renderSidebar() {
   document.getElementById("home-nav-row").classList.toggle("active", selected === "__home__");
+  document.getElementById("ctf-nav-row").classList.toggle("active", selected === "__ctf__");
   document.getElementById("mods-nav-row").classList.toggle("active", selected === "__mods__");
+  document.getElementById("media-nav-row").classList.toggle("active", selected === "__media__");
   document.getElementById("servers-nav-row").classList.toggle("active", selected === "__servers__");
   document.getElementById("faq-nav-row").classList.toggle("active", selected === "__faq__");
   document.getElementById("sign-out-section").hidden = !session;
+
+  const clientSelected = mods.some((m) => m.name === selected);
+  const groupRow = document.getElementById("clients-group-row");
+  groupRow.classList.toggle("open", clientsGroupOpen);
+  groupRow.setAttribute("aria-expanded", String(clientsGroupOpen));
+  // Folded shut while viewing a client: the group row stands in as active.
+  groupRow.classList.toggle("active", clientSelected && !clientsGroupOpen);
+  document.getElementById("clients-group").hidden = !clientsGroupOpen;
+
+  // Leave a manifest error (and its Retry button) in place until it's retried.
+  if (!mods.length) return;
   document.getElementById("client-list").innerHTML = mods
     .map((mod) => {
-      const state = modState[mod.name] || {};
-      const status = state.installed ? "installed" : modSupportedOnCurrentPlatform(mod.name) ? "" : "unsupported";
-      const classes = ["client-row", mod.name === selected ? "active" : "", state.installed ? "installed" : ""]
+      const status = clientRowStatus(mod);
+      const classes = ["client-row", mod.name === selected ? "active" : "", status.installed ? "installed" : "", status.checking ? "checking" : ""]
         .filter(Boolean)
         .join(" ");
-      return `<div class="${classes}" data-name="${mod.name}">
+      return `<div class="${classes}" data-name="${mod.name}" title="${status.title}">
         <span class="client-row-name">${mod.displayName ?? mod.name}</span>
-        <span class="client-row-status">${status}</span>
+        ${status.tag ? `<span class="client-row-status ${status.tag === "update" ? "client-row-status--update" : ""}">${status.tag}</span>` : ""}
+        <span class="client-dot" aria-hidden="true"></span>
       </div>`;
     })
     .join("");
@@ -601,7 +646,14 @@ function feedRowHtml(item) {
   </div>`;
 }
 
+// Both feeds are kicked off from render, which can run several times before
+// the first answer is back - one request each is plenty.
+let activityFeedLoading = false;
+let recentVideosLoading = false;
+
 async function loadActivityFeed() {
+  if (activityFeedLoading) return;
+  activityFeedLoading = true;
   try {
     const { fetch } = window.__TAURI__.http;
     const res = await fetch(`${SORACLE_BASE}/api/activity-feed`);
@@ -610,10 +662,13 @@ async function loadActivityFeed() {
   } catch (err) {
     activityFeedError = String(err);
   }
-  if (selected === "__home__") renderMain();
+  activityFeedLoading = false;
+  if (selected === "__ctf__") renderMain();
 }
 
 async function loadRecentVideos() {
+  if (recentVideosLoading) return;
+  recentVideosLoading = true;
   try {
     const { fetch } = window.__TAURI__.http;
     const res = await fetch(`${SORACLE_BASE}/api/recent-videos`);
@@ -622,7 +677,8 @@ async function loadRecentVideos() {
   } catch {
     recentVideos = [];
   }
-  if (selected === "__home__") renderMain();
+  recentVideosLoading = false;
+  if (selected === "__ctf__") renderMain();
 }
 
 function recentVideoCardHtml(video) {
@@ -653,115 +709,166 @@ function renderRecentHighlightsBlock() {
   `;
 }
 
-function pinnedActionButtonHtml(actionId) {
-  const resolved = resolvePinnedAction(actionId);
-  if (serverStatusCache[resolved.server] === undefined) {
-    loadServerStatus(resolved.server);
-  }
-  const status = serverStatusCache[resolved.server];
-  const meta = !status
-    ? "Checking..."
-    : status.error
-      ? "Unreachable right now"
-      : `${status.map} &middot; ${status.players.length}/${status.max_clients} players`;
-  const clientLabel = resolved.client
-    ? (mods.find((m) => m.name === resolved.client)?.displayName ?? resolved.client)
-    : "Install a client to use this";
+const modeMessages = {}; // mode id -> "Launching..." or an error, shown on its banner
 
+// Install state arrives a moment after launch (see refreshModStates) -
+// until then, say so rather than flash "isn't installed" and an Install
+// button at someone who has it installed.
+function modeChecking(mode) {
+  return modSupportedOnCurrentPlatform(mode.client) && modState[mode.client] === undefined;
+}
+
+function clientDisplayName(name) {
+  return mods.find((m) => m.name === name)?.displayName ?? name;
+}
+
+function modeMetaText(mode, client) {
+  if (modeMessages[mode.id]) return modeMessages[mode.id];
+  if (modeChecking(mode)) return "Checking...";
+  if (!client) return `Not available on ${currentPlatform === "macos" ? "macOS" : currentPlatform}`;
+  if (!modState[client]?.installed) return `${clientDisplayName(client)} isn't installed yet`;
+  let text;
+  if (mode.singlePlayer) {
+    text = "Single-player";
+  } else {
+    const server = modeServers[mode.id];
+    if (!server) {
+      text = "No server picked &middot; opens the main menu";
+    } else {
+      const status = serverStatusCache[server];
+      if (status === undefined) loadServerStatus(server);
+      text = !status
+        ? `${server} &middot; checking...`
+        : status.error
+          ? `${server} &middot; unreachable right now`
+          : `${escapeHtml(stripQuakeColors(status.hostname))} &middot; ${escapeHtml(status.map)} &middot; ${status.players.length}/${status.max_clients} players`;
+    }
+  }
+  return text;
+}
+
+// Shared by the Home banners and the CTF page's own Play CTF button.
+function modePlayButtonHtml(mode, label = "Play") {
+  const client = modeClient(mode);
+  if (!client || modeChecking(mode)) {
+    return `<button class="mode-play-btn" disabled>${label}</button>`;
+  }
+  if (!modState[client]?.installed) {
+    // Not installed: take them to the client's page, where Install lives.
+    return `<button class="mode-play-btn mode-play-btn--install" data-mode-install="${client}">Install</button>`;
+  }
+  return `<button class="mode-play-btn" data-mode-play="${mode.id}">${label}</button>`;
+}
+
+function modeBannerHtml(mode) {
+  const client = modeClient(mode);
+  const button = modePlayButtonHtml(mode);
+  const gear = mode.singlePlayer
+    ? ""
+    : `<button class="mode-gear-btn" data-mode-server="${mode.id}" title="Choose a server" aria-label="Choose a server for ${mode.title}">⚙</button>`;
   return `
-    <div class="pinned-action">
-      <button class="pinned-action-btn" data-pinned-play="${actionId}" ${resolved.client ? "" : "disabled"}>${pinnedActionLabel(actionId)}</button>
-      <div class="pinned-action-info">
-        <span class="pinned-action-server">${serverDisplayName(resolved.server)}</span>
-        <span class="pinned-action-meta">${meta} &middot; ${clientLabel}</span>
+    <div class="mode-banner">
+      <img class="mode-banner-img" src="assets/banners/${mode.client.toLowerCase()}.jpg" alt="" onerror="this.remove()">
+      <div class="mode-banner-text">
+        <h3 class="mode-banner-title">${mode.title}</h3>
+        <p class="mode-banner-meta">${modeMetaText(mode, client)}</p>
       </div>
-      <button class="pinned-action-edit-btn" data-pinned-edit="${actionId}" title="Customize ${pinnedActionLabel(actionId)}">⚙</button>
-      ${serverJoinMessage[resolved.server] ? `<p class="detail-status">${serverJoinMessage[resolved.server]}</p>` : ""}
+      <div class="mode-banner-actions">${button}${gear}</div>
     </div>`;
 }
 
-function pinnedActionsHtml() {
-  return `<div class="pinned-actions">${pinnedActionButtonHtml("ctf")}${pinnedActionButtonHtml("defrag")}</div>`;
-}
-
-// A themed small form dialog, same overlay/backdrop-cancels pattern as
-// showConfirmDialog - resolves the picked {server, client}, or null if
-// cancelled.
-function editPinnedAction(actionId) {
-  const pin = pinnedActions[actionId];
-  const installedJoinable = JOINABLE_CLIENTS.filter((name) => modState[name]?.installed);
-  // Every known/favorited address, plus whatever's currently pinned even if
-  // it's since fallen off both lists - never silently drop the current pick.
-  const serverOptions = Array.from(new Set([...getFavoriteServers(), ...KNOWN_SERVERS, pin.server]));
-
+// Resolves the picked address, "" for no server (open the main menu), or
+// null if cancelled.
+function pickModeServer(mode) {
+  const current = modeServers[mode.id] ?? "";
+  // Every known/favorited address, plus the current pick even if it's since
+  // fallen off both lists (or was typed in) - never silently drop it.
+  const listed = Array.from(new Set([...getFavoriteServers(), ...KNOWN_SERVERS, ...(current ? [current] : [])]));
   return new Promise((resolve) => {
     const overlay = document.createElement("div");
     overlay.className = "confirm-overlay";
     overlay.innerHTML = `
       <div class="confirm-dialog confirm-dialog--wide">
-        <h3 class="confirm-title">Customize ${pinnedActionLabel(actionId)}</h3>
+        <h3 class="confirm-title">${mode.title.replace(/ \(.*\)$/, "")} server</h3>
         <label class="pinned-edit-field">
-          <span>Server</span>
-          <select class="pinned-edit-server">
-            ${serverOptions.map((addr) => `<option value="${addr}" ${addr === pin.server ? "selected" : ""}>${serverDisplayName(addr)}</option>`).join("")}
+          <span>Play joins</span>
+          <select class="mode-server-select">
+            <option value="" ${current ? "" : "selected"}>No server - open the main menu</option>
+            ${listed.map((addr) => `<option value="${addr}" ${addr === current ? "selected" : ""}>${escapeHtml(serverDisplayName(addr))}</option>`).join("")}
           </select>
         </label>
         <label class="pinned-edit-field">
-          <span>Client</span>
-          <select class="pinned-edit-client">
-            <option value="auto" ${pin.client === "auto" ? "selected" : ""}>Auto (first installed client)</option>
-            ${installedJoinable.map((name) => `<option value="${name}" ${pin.client === name ? "selected" : ""}>${mods.find((m) => m.name === name)?.displayName ?? name}</option>`).join("")}
-          </select>
+          <span>Or enter an address</span>
+          <input type="text" class="mode-server-input" placeholder="123.45.67.89:28070" spellcheck="false" autocomplete="off">
         </label>
+        <p class="dialog-error"></p>
         <div class="confirm-actions">
           <button class="confirm-cancel-btn">Cancel</button>
           <button class="confirm-ok-btn">Save</button>
         </div>
       </div>`;
     document.body.appendChild(overlay);
+    const input = overlay.querySelector(".mode-server-input");
+    const errorEl = overlay.querySelector(".dialog-error");
+
+    // Servers nobody has looked at yet show as bare addresses - look them up
+    // and swap their names in as answers arrive.
+    for (const option of overlay.querySelectorAll(".mode-server-select option[value]:not([value=''])")) {
+      if (serverStatusCache[option.value] !== undefined) continue;
+      loadServerStatus(option.value).then(() => {
+        option.textContent = serverDisplayName(option.value);
+      });
+    }
 
     function finish(result) {
       overlay.remove();
       resolve(result);
     }
+    function save() {
+      const typed = input.value.trim();
+      if (typed && !/^[A-Za-z0-9.-]+:\d{1,5}$/.test(typed)) {
+        errorEl.textContent = "Enter it as host:port, like 123.45.67.89:28070";
+        return;
+      }
+      finish(typed || overlay.querySelector(".mode-server-select").value);
+    }
     overlay.addEventListener("click", (e) => {
       if (e.target === overlay) finish(null);
     });
-    overlay.querySelector(".confirm-cancel-btn").addEventListener("click", () => finish(null));
-    overlay.querySelector(".confirm-ok-btn").addEventListener("click", () => {
-      finish({
-        server: overlay.querySelector(".pinned-edit-server").value,
-        client: overlay.querySelector(".pinned-edit-client").value,
-      });
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") save();
     });
+    overlay.querySelector(".confirm-cancel-btn").addEventListener("click", () => finish(null));
+    overlay.querySelector(".confirm-ok-btn").addEventListener("click", save);
   });
 }
 
-async function openPinnedActionEditor(actionId) {
-  const result = await editPinnedAction(actionId);
-  if (!result) return;
-  pinnedActions[actionId] = result;
-  savePinnedActions();
+async function chooseModeServer(modeId) {
+  const mode = GAME_MODES.find((m) => m.id === modeId);
+  const picked = await pickModeServer(mode);
+  if (picked === null) return;
+  modeServers[modeId] = picked || null;
+  saveModeServers();
   renderMain();
 }
 
-async function playPinnedAction(actionId) {
-  const resolved = resolvePinnedAction(actionId);
-  if (!resolved.client) return;
-  // NWH is the client organised CTF actually runs on, but it isn't
-  // installable in this launcher yet (see the FAQ) - "auto" can only ever
-  // land on an installed JOINABLE_CLIENTS entry, so warn rather than just
-  // silently joining with a substitute that some servers won't accept.
-  if (actionId === "ctf" && resolved.client !== "NWH") {
-    const clientLabel = mods.find((m) => m.name === resolved.client)?.displayName ?? resolved.client;
-    const proceed = await showConfirmDialog({
-      title: "Heads up",
-      message: `Some CTF servers require the NWH client for anti-cheat, which this launcher can't install yet. You'll be joining with ${clientLabel} instead.`,
-      confirmLabel: "Continue",
-    });
-    if (!proceed) return;
+async function playMode(modeId) {
+  const mode = GAME_MODES.find((m) => m.id === modeId);
+  const client = modeClient(mode);
+  if (!client || !modState[client]?.installed) return;
+  const { invoke } = window.__TAURI__.core;
+  const handler = MOD_HANDLERS[client];
+  modeMessages[modeId] = "Launching...";
+  renderMain();
+  try {
+    // play_openjo takes no address; the others treat a missing one as
+    // "just open the game".
+    await invoke(handler.playCommand, mode.singlePlayer ? {} : { connectAddress: modeServers[modeId] ?? null });
+    modeMessages[modeId] = "";
+  } catch (err) {
+    modeMessages[modeId] = `Error: ${escapeHtml(String(err))}`;
   }
-  await joinServer(resolved.client, resolved.server);
+  renderMain();
 }
 
 // One thin row per favorite, all sharing a single card - was one big
@@ -823,15 +930,22 @@ function renderHomeView(mainEl) {
   const welcome = session
     ? `<div class="home-welcome"><h2>Welcome back, ${session.name}</h2></div>`
     : `<div class="home-welcome"><h2>Welcome to JK2 Launcher</h2></div>`;
+  mainEl.innerHTML = `
+    ${welcome}
+    <p class="home-strap">Play and install community-verified clients for Jedi Knight II: Jedi Outcast.</p>
+    <div class="mode-banners">${GAME_MODES.map(modeBannerHtml).join("")}</div>
+  `;
+}
 
-  // Kept out of the initial welcome block and rendered further down (after
-  // the strap and favorite-server bar) so a first-time visitor's first
-  // impression isn't a login form - the strap line is what should read
-  // first.
-  const loginPromptHtml = session
-    ? ""
+// Everything JK2CTF: your stats once signed in, the highlight reel and what
+// the playerbase has been up to.
+function renderCtfView(mainEl) {
+  const ctfMod = mods.find((m) => m.name === "NWH");
+  const ctfMode = GAME_MODES.find((m) => m.id === "ctf");
+  const accountHtml = session
+    ? `<p class="home-feed-label">Your Stats</p>${ctfMod ? renderStatsBlock(ctfMod) : ""}`
     : `<div class="home-login-prompt">
-         <p>Sign in with your JK2CTF player account to see your stats here and on Capture the Flag - NWH.</p>
+         <p>Sign in with your JK2CTF player account to see your stats.</p>
          <form id="soracle-login-form" class="login-form">
            <input name="name" placeholder="Player name" autocomplete="username" required>
            <input name="password" type="password" placeholder="Password" autocomplete="current-password" required>
@@ -853,28 +967,33 @@ function renderHomeView(mainEl) {
   }
 
   mainEl.innerHTML = `
-    ${welcome}
-    <p class="home-strap">Download, update and launch a client from the sidebar, and see what the playerbase has been up to below.</p>
-    ${pinnedActionsHtml()}
-    ${favoriteServerBlocksHtml()}
-    ${loginPromptHtml}
+    <div class="detail-header"><h2>Capture The Flag</h2></div>
+    <p class="detail-description">Organised Capture the Flag on JK2CTF - your stats, the latest highlights, and what the playerbase has been up to.</p>
+    <div class="ctf-play-row">
+      ${modePlayButtonHtml(ctfMode, "Play CTF")}
+      <span class="ctf-play-meta">${modeMetaText(ctfMode, modeClient(ctfMode))}</span>
+    </div>
+    ${accountHtml}
+    <a class="ctf-site-btn" href="${SORACLE_BASE}" target="_blank" rel="noopener">Visit JK2CTF.com <span aria-hidden="true">&#8599;</span></a>
     ${renderRecentHighlightsBlock()}
     <p class="home-feed-label">Recent Activity</p>
     ${feedHtml}
   `;
 }
 
-// Strips idTech3 caret color codes (^1, ^7, etc.) and raw control bytes some
+// Strips idTech3 caret color codes and raw control bytes some
 // servers throw into their hostname/player names (seen in the wild as
 // literal \x01 bytes, presumably an old anti-spoof or client-specific trick)
 // - both render as garbled box glyphs otherwise.
 function stripQuakeColors(s) {
-  return (s ?? "").replace(/\^[0-9]/g, "").replace(/[\x00-\x1f]/g, "");
+  // JK2 reads ^ plus any character but another ^ as a color code - not just
+  // ^0-^9 (NWH New Jersey's hostname uses ^_).
+  return (s ?? "").replace(/\^[^^]/g, "").replace(/[\x00-\x1f]/g, "");
 }
 
 const serverStatusLoading = new Set(); // addresses with a query already in flight
 
-// Shared by the Home favorite-server bar and the Servers page - a single
+// Shared by the Home mode banners and the Servers page - a single
 // address, queried directly and cached until the app restarts or Refresh
 // clears it.
 async function loadServerStatus(address) {
@@ -890,7 +1009,7 @@ async function loadServerStatus(address) {
   }
   // Re-render wherever this result is actually shown, regardless of which
   // view triggered the load in the first place.
-  if (selected === "__home__" || selected === "__servers__") renderMain();
+  if (selected === "__home__" || selected === "__ctf__" || selected === "__servers__") renderMain();
 }
 
 async function joinServer(clientName, address) {
@@ -992,7 +1111,8 @@ function renderServersView(mainEl) {
       <h2>Servers</h2>
       <button class="server-refresh-btn" id="server-refresh-btn">Refresh</button>
     </div>
-    <p class="detail-description">Known JK2 1.02 community servers, queried directly - star a favorite for a one-click join from Home, click a row for details.</p>
+    <p class="detail-description">Known JK2 1.02 community servers, queried directly - star a favorite to keep it pinned up top for a one-click join, click a row for details.</p>
+    ${favoriteServerBlocksHtml()}
     ${listHtml}
   `;
 }
@@ -1273,6 +1393,557 @@ function renderModsView(mainEl) {
   `;
 }
 
+// --- Media: screenshots and demos from every client ---------------------------
+// Where each client actually saves these is worked out on the Rust side
+// (see list_media) - a single client can have them spread over base/, its
+// launchermods_ folder and its own home folder, depending on when they were
+// taken. Here it's one list, filtered by kind and client.
+
+let mediaItems = null; // list from list_media, or null while loading
+let mediaError = null;
+let mediaKind = "screenshot"; // or "demo"
+let mediaClient = "all";
+let mediaSearch = "";
+let mediaPage = 0;
+let mediaSelectedPath = null;
+const MEDIA_PAGE_SIZE = 48;
+
+// path -> blob: URL, or "" when that screenshot couldn't be previewed.
+// Thumbnails are generated and cached on disk by the Rust side; this only
+// stops one session from asking for the same one twice.
+const mediaThumbUrls = new Map();
+const mediaThumbsLoading = new Set();
+
+async function loadMedia() {
+  try {
+    const { invoke } = window.__TAURI__.core;
+    mediaItems = await invoke("list_media");
+    mediaError = null;
+  } catch (err) {
+    mediaError = String(err);
+  }
+  if (selected === "__media__") renderMainPreservingScroll();
+}
+
+// Fresh scan every time - a new screenshot or demo since the last visit is
+// exactly what someone opening this tab is looking for.
+function refreshMedia() {
+  for (const url of mediaThumbUrls.values()) if (url) URL.revokeObjectURL(url);
+  mediaThumbUrls.clear();
+  mediaItems = null;
+  mediaError = null;
+}
+
+function setMediaStatus(message) {
+  const el = document.getElementById("media-status");
+  if (el) el.textContent = message;
+}
+
+function clientLabel(id) {
+  const client = PK3_CLIENTS.find((c) => c.id === id);
+  if (!client) return id;
+  return mods.find((m) => m.name === client.name)?.displayName ?? client.label;
+}
+
+// A screenshot in a base/ folder several clients share could have come from
+// any of them - there's no telling which, so it's labelled as shared rather
+// than pinned on one.
+function mediaClientsLabel(item) {
+  return item.clients.length > 1 ? "Shared" : clientLabel(item.clients[0]);
+}
+
+function formatBytes(bytes) {
+  if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`;
+  if (bytes >= 1e6) return `${Math.round(bytes / 1e6)} MB`;
+  if (bytes >= 1e3) return `${Math.round(bytes / 1e3)} KB`;
+  return `${bytes} B`;
+}
+
+function formatMediaDate(unixSeconds) {
+  const date = new Date(unixSeconds * 1000);
+  const now = new Date();
+  const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const daysAgo = Math.round((startOfDay(now) - startOfDay(date)) / 86400000);
+  const time = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  if (daysAgo === 0) return `Today ${time}`;
+  if (daysAgo === 1) return `Yesterday ${time}`;
+  return date.toLocaleDateString([], {
+    month: "short",
+    day: "numeric",
+    ...(date.getFullYear() !== now.getFullYear() ? { year: "numeric" } : {}),
+  });
+}
+
+function revealLabel() {
+  return currentPlatform === "macos" ? "Show in Finder" : "Show in folder";
+}
+
+function trashName() {
+  return currentPlatform === "windows" ? "Recycle Bin" : "Trash";
+}
+
+function filteredMedia() {
+  const term = mediaSearch.trim().toLowerCase();
+  return mediaItems.filter(
+    (m) =>
+      m.kind === mediaKind &&
+      (mediaClient === "all" || m.clients.includes(mediaClient)) &&
+      (!term || m.name.toLowerCase().includes(term))
+  );
+}
+
+// Clients that could play this demo right now: one that wrote into its
+// folder, is installed, and isn't OpenJO (single-player, no demo playback).
+function demoPlayers(item) {
+  return PK3_CLIENTS.filter(
+    (c) => c.id !== "openjo" && item.clients.includes(c.id) && modState[c.name]?.installed
+  );
+}
+
+function screenshotCardHtml(item) {
+  const url = mediaThumbUrls.get(item.path);
+  const preview = url ? `<img src="${url}" alt="">` : url === "" ? `<span class="media-thumb-fallback">No preview</span>` : "";
+  return `
+    <button class="media-thumb ${item.path === mediaSelectedPath ? "selected" : ""}" data-media-select="${escapeHtml(item.path)}">
+      <span class="media-thumb-img">${preview}</span>
+      <span class="media-thumb-name">${escapeHtml(item.name)}</span>
+      <span class="media-thumb-meta">${mediaClient === "all" ? `${escapeHtml(mediaClientsLabel(item))} &middot; ` : ""}${formatMediaDate(item.modified)}</span>
+    </button>`;
+}
+
+function screenshotBarHtml(item) {
+  const path = escapeHtml(item.path);
+  const dims = item.width ? ` &middot; ${item.width}&times;${item.height}` : "";
+  return `
+    <div class="media-selection-bar">
+      <span class="media-selection-info">
+        <span class="media-selection-name">${escapeHtml(item.name)}</span>
+        &middot; ${escapeHtml(item.clients.length > 1 ? `Shared by ${item.clients.map(clientLabel).join(", ")}` : mediaClientsLabel(item))}${dims} &middot; ${formatBytes(item.size)}
+      </span>
+      <button class="change-folder" data-media-view="${path}">View</button>
+      <button class="change-folder" data-media-copy="${path}">Copy</button>
+      <button class="change-folder" data-media-reveal="${path}">${revealLabel()}</button>
+      <button class="media-trash-btn" data-media-trash="${path}">Move to ${trashName()}</button>
+    </div>`;
+}
+
+function demoRowHtml(item) {
+  const path = escapeHtml(item.path);
+  const protocol = item.name.toLowerCase().endsWith(".dm_16") ? "1.04" : "1.02";
+  const stem = item.name.replace(/\.dm_1[56]$/i, "");
+  const players = demoPlayers(item);
+  let watch;
+  if (!players.length) {
+    watch = `<span class="media-demo-note">No installed client can play this</span>`;
+  } else if (players.length === 1) {
+    watch = `<button class="media-watch-btn" data-media-watch="${path}" data-client="${players[0].id}">Watch</button>`;
+  } else {
+    watch = `
+      <select class="server-client-select media-watch-client">
+        ${players.map((c) => `<option value="${c.id}">${escapeHtml(clientLabel(c.id))}</option>`).join("")}
+      </select>
+      <button class="media-watch-btn" data-media-watch="${path}">Watch</button>`;
+  }
+  return `
+    <div class="media-demo-row">
+      <div class="media-demo-info">
+        <p class="media-demo-name">${escapeHtml(stem)} <span class="media-demo-tag">${protocol}</span></p>
+        <p class="media-demo-meta">${mediaClient === "all" ? `${escapeHtml(mediaClientsLabel(item))} &middot; ` : ""}${formatMediaDate(item.modified)} &middot; ${formatBytes(item.size)}</p>
+      </div>
+      <div class="media-demo-actions">
+        ${watch}
+        <button class="change-folder" data-media-rename="${path}">Rename</button>
+        <button class="change-folder" data-media-reveal="${path}">${revealLabel()}</button>
+        <button class="media-trash-btn" data-media-trash="${path}">Move to ${trashName()}</button>
+      </div>
+    </div>`;
+}
+
+// On the Demos tab, under Refresh - whether or not there are any demos yet.
+const DEMO_CUT_REQUESTS_URL = "https://archive.org/details/democuts";
+const demoCutRequestsHtml = `<a class="profile-link media-democuts-link" href="${DEMO_CUT_REQUESTS_URL}" target="_blank" rel="noopener">Demo Cut Requests &#8599;</a>`;
+
+function renderMediaResults() {
+  const items = filteredMedia();
+  if (!items.length) {
+    if (mediaSearch.trim()) return `<p class="detail-status">Nothing matches "${escapeHtml(mediaSearch)}".</p>`;
+    return mediaKind === "screenshot"
+      ? `<p class="detail-status">No screenshots yet. Take one in game with <code>/screenshotJPEG</code>, or bind it to a key.</p>`
+      : `<p class="detail-status">No demos yet. Start recording in game with <code>/record</code> and stop with <code>/stoprecord</code>.</p>`;
+  }
+
+  const totalPages = Math.ceil(items.length / MEDIA_PAGE_SIZE);
+  mediaPage = Math.min(mediaPage, totalPages - 1);
+  const shown = items.slice(mediaPage * MEDIA_PAGE_SIZE, (mediaPage + 1) * MEDIA_PAGE_SIZE);
+  const pagerHtml =
+    totalPages > 1
+      ? `<div class="monolith-pager">
+           <button id="media-prev-page" ${mediaPage === 0 ? "disabled" : ""}>&larr; Prev</button>
+           <span class="monolith-pager-label">Page ${mediaPage + 1} of ${totalPages} &middot; ${items.length} files</span>
+           <button id="media-next-page" ${mediaPage >= totalPages - 1 ? "disabled" : ""}>Next &rarr;</button>
+         </div>`
+      : "";
+
+  if (mediaKind === "demo") {
+    return `<div class="media-demo-list">${shown.map(demoRowHtml).join("")}</div>${pagerHtml}`;
+  }
+  const selectedItem = items.find((m) => m.path === mediaSelectedPath);
+  return `
+    <div class="media-grid">${shown.map(screenshotCardHtml).join("")}</div>
+    ${pagerHtml}
+    ${selectedItem ? screenshotBarHtml(selectedItem) : ""}`;
+}
+
+function refreshMediaResults() {
+  const resultsEl = document.getElementById("media-results");
+  if (!resultsEl) return;
+  resultsEl.innerHTML = renderMediaResults();
+  loadVisibleThumbs();
+}
+
+function renderMediaView(mainEl) {
+  if (mediaError) {
+    mainEl.innerHTML = `<div class="detail-header"><h2>Media</h2></div><p class="detail-status">Couldn't load media: ${escapeHtml(mediaError)}</p>`;
+    return;
+  }
+  if (mediaItems === null) {
+    mainEl.innerHTML = `<div class="detail-header"><h2>Media</h2></div><p class="detail-status">Looking for screenshots and demos...</p>`;
+    loadMedia();
+    return;
+  }
+
+  // Only clients that actually have something of this kind are worth a
+  // filter - OpenJO, for one, never has demos.
+  const clientIds = PK3_CLIENTS.map((c) => c.id).filter((id) =>
+    mediaItems.some((m) => m.kind === mediaKind && m.clients.includes(id))
+  );
+  if (!clientIds.includes(mediaClient)) mediaClient = "all";
+  const inClient = (m) => mediaClient === "all" || m.clients.includes(mediaClient);
+  const count = (kind) => mediaItems.filter((m) => m.kind === kind && inClient(m)).length;
+  const totalBytes = mediaItems.reduce((sum, m) => sum + m.size, 0);
+
+  const chipsHtml =
+    clientIds.length > 1
+      ? `<div class="media-chips">
+           ${["all", ...clientIds]
+             .map((id) => `<button class="media-chip ${id === mediaClient ? "active" : ""}" data-media-client="${id}">${id === "all" ? "All clients" : escapeHtml(clientLabel(id))}</button>`)
+             .join("")}
+         </div>`
+      : "";
+
+  mainEl.innerHTML = `
+    <div class="detail-header">
+      <h2>Media</h2>
+      ${mediaItems.length ? `<span class="detail-version">${formatBytes(totalBytes)} on disk</span>` : ""}
+    </div>
+    <p class="detail-description">Screenshots and demos from every client, wherever each one saved them.</p>
+    <div class="media-toolbar">
+      <div class="media-tabs">
+        <button class="media-tab ${mediaKind === "screenshot" ? "active" : ""}" data-media-kind="screenshot">Screenshots <span class="media-tab-count">${count("screenshot")}</span></button>
+        <button class="media-tab ${mediaKind === "demo" ? "active" : ""}" data-media-kind="demo">Demos <span class="media-tab-count">${count("demo")}</span></button>
+      </div>
+      <input type="text" id="media-search" class="monolith-search-input media-search" placeholder="Search by name..." value="${escapeHtml(mediaSearch)}">
+      <button class="change-folder" id="media-refresh-btn">Refresh</button>
+      ${chipsHtml}
+      ${mediaKind === "demo" ? demoCutRequestsHtml : ""}
+    </div>
+    <p class="detail-status" id="media-status"></p>
+    <div id="media-results">${renderMediaResults()}</div>
+  `;
+  loadVisibleThumbs();
+}
+
+// A few at a time - the first time a screenshot is seen, its thumbnail means
+// decoding the full-size image.
+async function loadVisibleThumbs() {
+  const { invoke } = window.__TAURI__.core;
+  const pending = [...document.querySelectorAll(".media-thumb[data-media-select]")]
+    .map((el) => el.dataset.mediaSelect)
+    .filter((path) => !mediaThumbUrls.has(path) && !mediaThumbsLoading.has(path));
+  const worker = async () => {
+    while (pending.length) {
+      const path = pending.shift();
+      mediaThumbsLoading.add(path);
+      try {
+        const bytes = await invoke("media_thumbnail", { path });
+        mediaThumbUrls.set(path, URL.createObjectURL(new Blob([bytes], { type: "image/jpeg" })));
+      } catch {
+        mediaThumbUrls.set(path, "");
+      }
+      mediaThumbsLoading.delete(path);
+      const url = mediaThumbUrls.get(path);
+      for (const el of document.querySelectorAll(".media-thumb[data-media-select]")) {
+        if (el.dataset.mediaSelect !== path) continue;
+        el.querySelector(".media-thumb-img").innerHTML = url
+          ? `<img src="${url}" alt="">`
+          : `<span class="media-thumb-fallback">No preview</span>`;
+      }
+    }
+  };
+  await Promise.all([worker(), worker(), worker()]);
+}
+
+function openMediaViewer(path) {
+  const { invoke } = window.__TAURI__.core;
+  const items = filteredMedia();
+  let index = items.findIndex((m) => m.path === path);
+  if (index < 0) return;
+
+  const overlay = document.createElement("div");
+  overlay.className = "confirm-overlay media-viewer";
+  overlay.innerHTML = `
+    ${items.length > 1 ? `<button class="media-viewer-nav" data-step="-1" aria-label="Previous">&larr;</button>` : ""}
+    <figure class="media-viewer-figure">
+      <img class="media-viewer-img" alt="">
+      <figcaption class="media-viewer-caption"></figcaption>
+    </figure>
+    ${items.length > 1 ? `<button class="media-viewer-nav" data-step="1" aria-label="Next">&rarr;</button>` : ""}`;
+  document.body.appendChild(overlay);
+  const img = overlay.querySelector(".media-viewer-img");
+  const caption = overlay.querySelector(".media-viewer-caption");
+  let currentUrl = null;
+
+  async function show(i) {
+    index = (i + items.length) % items.length;
+    const item = items[index];
+    mediaSelectedPath = item.path;
+    caption.textContent = `${item.name} · ${mediaClientsLabel(item)} · ${formatMediaDate(item.modified)}`;
+    try {
+      const bytes = await invoke("media_image", { path: item.path });
+      if (items[index] !== item) return; // moved on while this was loading
+      if (currentUrl) URL.revokeObjectURL(currentUrl);
+      currentUrl = URL.createObjectURL(new Blob([bytes]));
+      img.src = currentUrl;
+    } catch (err) {
+      caption.textContent += ` · Couldn't open: ${err}`;
+    }
+  }
+
+  function close() {
+    document.removeEventListener("keydown", onKey);
+    overlay.remove();
+    if (currentUrl) URL.revokeObjectURL(currentUrl);
+    refreshMediaResults();
+  }
+
+  function onKey(e) {
+    if (e.key === "Escape") close();
+    else if (e.key === "ArrowLeft" && items.length > 1) show(index - 1);
+    else if (e.key === "ArrowRight" && items.length > 1) show(index + 1);
+  }
+
+  document.addEventListener("keydown", onKey);
+  overlay.addEventListener("click", (e) => {
+    const nav = e.target.closest(".media-viewer-nav");
+    if (nav) show(index + Number(nav.dataset.step));
+    else if (e.target === overlay) close();
+  });
+  show(index);
+}
+
+async function bytesToPngBlob(bytes) {
+  const bitmap = await createImageBitmap(new Blob([bytes]));
+  const canvas = document.createElement("canvas");
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  canvas.getContext("2d").drawImage(bitmap, 0, 0);
+  return new Promise((resolve, reject) =>
+    canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("couldn't encode image"))), "image/png")
+  );
+}
+
+// Clipboards take PNG, not JPEG, and WebKit only allows the write while the
+// click is still being handled - so the ClipboardItem is handed a promise
+// straight away rather than waiting for the image to load first.
+async function copyScreenshot(path) {
+  const { invoke } = window.__TAURI__.core;
+  const png = invoke("media_image", { path }).then(bytesToPngBlob);
+  try {
+    await navigator.clipboard.write([new ClipboardItem({ "image/png": png })]);
+    setMediaStatus("Copied to clipboard");
+  } catch (err) {
+    setMediaStatus(`Couldn't copy: ${err}`);
+  }
+}
+
+async function revealMedia(path) {
+  try {
+    const { invoke } = window.__TAURI__.core;
+    await invoke("reveal_media", { path });
+  } catch (err) {
+    setMediaStatus(`Error: ${err}`);
+  }
+}
+
+async function trashMedia(path) {
+  const item = mediaItems.find((m) => m.path === path);
+  if (!item) return;
+  const confirmed = await showConfirmDialog({
+    title: `Move to ${trashName()}?`,
+    message: `${escapeHtml(item.name)} will be moved to the ${trashName()}. You can restore it from there.`,
+    confirmLabel: `Move to ${trashName()}`,
+    danger: true,
+  });
+  if (!confirmed) return;
+  try {
+    const { invoke } = window.__TAURI__.core;
+    await invoke("trash_media", { path });
+    mediaItems = mediaItems.filter((m) => m.path !== path);
+    const url = mediaThumbUrls.get(path);
+    if (url) URL.revokeObjectURL(url);
+    mediaThumbUrls.delete(path);
+    if (mediaSelectedPath === path) mediaSelectedPath = null;
+    renderMainPreservingScroll();
+  } catch (err) {
+    setMediaStatus(`Error: ${err}`);
+  }
+}
+
+// `submit` runs on Save and throws to keep the dialog open with its message
+// shown - a name that's taken or has a space in it is worth fixing in place,
+// not starting over.
+function showRenameDialog(currentName, submit) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "confirm-overlay";
+    overlay.innerHTML = `
+      <div class="confirm-dialog confirm-dialog--wide">
+        <h3 class="confirm-title">Rename demo</h3>
+        <label class="pinned-edit-field">
+          <span>Name</span>
+          <input type="text" class="media-rename-input" value="${escapeHtml(currentName)}" spellcheck="false" autocomplete="off">
+        </label>
+        <p class="dialog-error"></p>
+        <div class="confirm-actions">
+          <button class="confirm-cancel-btn">Cancel</button>
+          <button class="confirm-ok-btn">Rename</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const input = overlay.querySelector(".media-rename-input");
+    const errorEl = overlay.querySelector(".dialog-error");
+    input.focus();
+    input.select();
+
+    function finish(result) {
+      overlay.remove();
+      resolve(result);
+    }
+    async function save() {
+      try {
+        finish(await submit(input.value));
+      } catch (err) {
+        errorEl.textContent = String(err);
+      }
+    }
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay) finish(null);
+    });
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") save();
+      if (e.key === "Escape") finish(null);
+    });
+    overlay.querySelector(".confirm-cancel-btn").addEventListener("click", () => finish(null));
+    overlay.querySelector(".confirm-ok-btn").addEventListener("click", save);
+  });
+}
+
+async function renameDemo(path) {
+  const item = mediaItems.find((m) => m.path === path);
+  if (!item) return;
+  const { invoke } = window.__TAURI__.core;
+  const stem = item.name.replace(/\.dm_1[56]$/i, "");
+  const newPath = await showRenameDialog(stem, (newName) => invoke("rename_demo", { path, newName }));
+  if (!newPath) return;
+  item.path = newPath;
+  item.name = newPath.split(/[\\/]/).pop();
+  renderMainPreservingScroll();
+}
+
+async function watchDemo(path, clientId) {
+  const item = mediaItems.find((m) => m.path === path);
+  try {
+    const { invoke } = window.__TAURI__.core;
+    await invoke("play_demo", { clientId, path });
+    setMediaStatus(`Opening ${item?.name ?? "demo"} in ${clientLabel(clientId)}...`);
+  } catch (err) {
+    setMediaStatus(`Error: ${err}`);
+  }
+}
+
+// Returns true when the click belonged to the Media view.
+function handleMediaClick(e) {
+  const kindBtn = e.target.closest("[data-media-kind]");
+  if (kindBtn) {
+    mediaKind = kindBtn.dataset.mediaKind;
+    mediaPage = 0;
+    mediaSelectedPath = null;
+    renderMainPreservingScroll();
+    return true;
+  }
+  const clientBtn = e.target.closest("[data-media-client]");
+  if (clientBtn) {
+    mediaClient = clientBtn.dataset.mediaClient;
+    mediaPage = 0;
+    renderMainPreservingScroll();
+    return true;
+  }
+  const thumb = e.target.closest("[data-media-select]");
+  if (thumb) {
+    const path = thumb.dataset.mediaSelect;
+    mediaSelectedPath = mediaSelectedPath === path ? null : path;
+    refreshMediaResults();
+    return true;
+  }
+  const viewBtn = e.target.closest("[data-media-view]");
+  if (viewBtn) {
+    openMediaViewer(viewBtn.dataset.mediaView);
+    return true;
+  }
+  const copyBtn = e.target.closest("[data-media-copy]");
+  if (copyBtn) {
+    copyScreenshot(copyBtn.dataset.mediaCopy);
+    return true;
+  }
+  const revealBtn = e.target.closest("[data-media-reveal]");
+  if (revealBtn) {
+    revealMedia(revealBtn.dataset.mediaReveal);
+    return true;
+  }
+  const trashBtn = e.target.closest("[data-media-trash]");
+  if (trashBtn) {
+    trashMedia(trashBtn.dataset.mediaTrash);
+    return true;
+  }
+  const renameBtn = e.target.closest("[data-media-rename]");
+  if (renameBtn) {
+    renameDemo(renameBtn.dataset.mediaRename);
+    return true;
+  }
+  const watchBtn = e.target.closest("[data-media-watch]");
+  if (watchBtn) {
+    const clientId = watchBtn.dataset.client ?? watchBtn.closest(".media-demo-actions").querySelector(".media-watch-client").value;
+    watchDemo(watchBtn.dataset.mediaWatch, clientId);
+    return true;
+  }
+  if (e.target.closest("#media-refresh-btn")) {
+    refreshMedia();
+    renderMainPreservingScroll();
+    return true;
+  }
+  if (e.target.closest("#media-prev-page")) {
+    mediaPage = Math.max(0, mediaPage - 1);
+    refreshMediaResults();
+    return true;
+  }
+  if (e.target.closest("#media-next-page")) {
+    mediaPage += 1;
+    refreshMediaResults();
+    return true;
+  }
+  return false;
+}
+
 function kdRatio(kills, deaths) {
   return deaths > 0 ? (kills / deaths).toFixed(2) : (kills > 0 ? kills.toFixed(2) : "0.00");
 }
@@ -1339,7 +2010,7 @@ async function loadStats(mod, name) {
   } catch (err) {
     statsCache[name] = { error: String(err) };
   }
-  if (selected === mod.name) renderMain();
+  if (selected === mod.name || selected === "__ctf__") renderMain();
 }
 
 const releaseCache = {}; // "owner/repo" -> release data, null (no releases), or { error }
@@ -1414,8 +2085,16 @@ function renderMain() {
     renderFaqView(mainEl);
     return;
   }
+  if (selected === "__ctf__") {
+    renderCtfView(mainEl);
+    return;
+  }
   if (selected === "__mods__") {
     renderModsView(mainEl);
+    return;
+  }
+  if (selected === "__media__") {
+    renderMediaView(mainEl);
     return;
   }
   if (selected === "__servers__") {
@@ -1455,13 +2134,8 @@ function renderMain() {
       }
     }
   }
-  let statsHtml = "";
   if (mod.profileUrl) {
-    if (session) {
-      statsHtml = renderStatsBlock(mod);
-    } else {
-      actions += `<a class="profile-link" href="${SORACLE_BASE}" target="_blank" rel="noopener">JK2 CTF</a>`;
-    }
+    actions += `<a class="profile-link" href="${SORACLE_BASE}" target="_blank" rel="noopener">JK2 CTF</a>`;
   }
   // Which copy of the game this client will actually touch. Only shown for
   // clients this platform can install at all - there's nothing to point at
@@ -1501,7 +2175,6 @@ function renderMain() {
     <div class="detail-actions">${actions}</div>
     <p class="detail-status">${state.message ?? ""}</p>
     ${folderHtml}
-    ${statsHtml}
     ${releaseHtml}
     ${sourceHtml}
   `;
@@ -1569,6 +2242,7 @@ async function handleAction(name, action) {
 
 function selectClient(name) {
   selected = name;
+  if (mods.some((m) => m.name === name) && !clientsGroupOpen) setClientsGroupOpen(true);
   renderSidebar();
   renderMain();
 }
@@ -1580,10 +2254,12 @@ async function checkGameFolder() {
   try {
     await invoke("locate_jk2");
     dot.classList.remove("missing");
+    dot.parentElement.classList.remove("missing");
     const override = await invoke("get_game_folder_override");
     desc.textContent = override ? "Custom folder" : "Steam install";
   } catch (err) {
     dot.classList.add("missing");
+    dot.parentElement.classList.add("missing");
     desc.innerHTML = `Not found — <a href="${STEAM_STORE_URL}" target="_blank" rel="noopener">buy on Steam</a>`;
     console.error("Game folder not found:", err);
   }
@@ -1665,16 +2341,12 @@ async function init() {
   } catch (err) {
     console.error("Failed to detect platform, defaulting to macos:", err);
   }
-  // NWH only belongs in the joinable pool on Linux, where it's actually
-  // installable at all (MOD_HANDLERS.NWH.platforms) - added here rather
-  // than listed in JOINABLE_CLIENTS itself since that constant is declared
-  // before currentPlatform is known.
-  if (currentPlatform === "linux") JOINABLE_CLIENTS.push("NWH");
   session = await loadSession();
   renderSidebar();
   renderMain();
 
   if (!(await loadManifest())) return;
+  renderSidebar(); // names up straight away; install checks fill in the dots
   await refreshModStates();
   checkForUpdates(true);
 }
@@ -1709,7 +2381,12 @@ async function retryManifestLoad() {
 }
 
 document.getElementById("home-nav-row").addEventListener("click", () => selectClient("__home__"));
+document.getElementById("ctf-nav-row").addEventListener("click", () => selectClient("__ctf__"));
 document.getElementById("mods-nav-row").addEventListener("click", () => selectClient("__mods__"));
+document.getElementById("media-nav-row").addEventListener("click", () => {
+  refreshMedia();
+  selectClient("__media__");
+});
 document.getElementById("servers-nav-row").addEventListener("click", () => selectClient("__servers__"));
 document.getElementById("faq-nav-row").addEventListener("click", () => selectClient("__faq__"));
 document.getElementById("sign-out-nav-row").addEventListener("click", () => {
@@ -1718,6 +2395,8 @@ document.getElementById("sign-out-nav-row").addEventListener("click", () => {
   renderSidebar();
   renderMain();
 });
+
+document.getElementById("clients-group-row").addEventListener("click", () => setClientsGroupOpen(!clientsGroupOpen));
 
 document.getElementById("client-list").addEventListener("click", (e) => {
   if (e.target.closest("#retry-manifest-btn")) {
@@ -1734,6 +2413,7 @@ document.getElementById("main").addEventListener("click", (e) => {
     handleAction(selected, btn.dataset.action);
     return;
   }
+  if (handleMediaClick(e)) return;
   const useSuggestedBtn = e.target.closest("button[data-use-suggested-folder]");
   if (useSuggestedBtn) {
     useSuggestedFolder(useSuggestedBtn.dataset.useSuggestedFolder, useSuggestedBtn.dataset.suggestedPath);
@@ -1749,14 +2429,19 @@ document.getElementById("main").addEventListener("click", (e) => {
     resetClientFolder(clearFolderBtn.dataset.clearClientFolder);
     return;
   }
-  const pinnedPlayBtn = e.target.closest("[data-pinned-play]");
-  if (pinnedPlayBtn && !pinnedPlayBtn.disabled) {
-    playPinnedAction(pinnedPlayBtn.dataset.pinnedPlay);
+  const modePlayBtn = e.target.closest("[data-mode-play]");
+  if (modePlayBtn) {
+    playMode(modePlayBtn.dataset.modePlay);
     return;
   }
-  const pinnedEditBtn = e.target.closest("[data-pinned-edit]");
-  if (pinnedEditBtn) {
-    openPinnedActionEditor(pinnedEditBtn.dataset.pinnedEdit);
+  const modeServerBtn = e.target.closest("[data-mode-server]");
+  if (modeServerBtn) {
+    chooseModeServer(modeServerBtn.dataset.modeServer);
+    return;
+  }
+  const modeInstallBtn = e.target.closest("[data-mode-install]");
+  if (modeInstallBtn) {
+    selectClient(modeInstallBtn.dataset.modeInstall);
     return;
   }
   if (e.target.closest("#back-to-home-link")) {
@@ -1840,6 +2525,11 @@ document.getElementById("main").addEventListener("click", (e) => {
   }
 });
 
+document.getElementById("main").addEventListener("dblclick", (e) => {
+  const thumb = e.target.closest("[data-media-select]");
+  if (thumb) openMediaViewer(thumb.dataset.mediaSelect);
+});
+
 document.getElementById("main").addEventListener("change", (e) => {
   const cb = e.target.closest('input[type="checkbox"][data-target]');
   if (cb) togglePk3Target(cb.dataset.filename, cb.dataset.target, cb.checked);
@@ -1852,6 +2542,13 @@ document.getElementById("main").addEventListener("input", (e) => {
     monolithPage = 0;
     const resultsEl = document.getElementById("monolith-results");
     if (resultsEl) resultsEl.innerHTML = renderMonolithResults();
+    return;
+  }
+  const mediaSearchEl = e.target.closest("#media-search");
+  if (mediaSearchEl) {
+    mediaSearch = mediaSearchEl.value;
+    mediaPage = 0;
+    refreshMediaResults();
     return;
   }
   const installedSearchEl = e.target.closest("#installed-mods-search");
