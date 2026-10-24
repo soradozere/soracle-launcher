@@ -24,6 +24,7 @@
         { "url": "https://github.com/mvdevs/jk2mv/releases/download/1.4.1/jk2mv-v1.4.1-win32-x64-portable.zip" },
         { "url": "https://github.com/mvdevs/jk2mv/releases/download/1.4.1/jk2mv-v1.4.1-linux-amd64.deb" },
         { "url": "https://jk2ctf.com/*" },
+        { "url": "https://pub-76bff0ef02794a5d95b7e2a8b8660f61.r2.dev/nwh/*" },
         { "url": "https://api.github.com/*" }
       ]
     },

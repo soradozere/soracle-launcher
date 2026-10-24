@@ -45,15 +45,15 @@ const MOD_HANDLERS = {
     playCommand: "play_jk2mv",
     uninstallCommand: "uninstall_jk2mv",
   },
-  // Linux-only: NWH's own build is Linux-only, full stop (see the FAQ) -
-  // `platforms` restricts which OS this client is even offered on, unlike
-  // the other three above, which install everywhere and so never need it.
+  // Builds for all three now, from jk2ctf.com/nwh-download. The macOS one is
+  // Apple Silicon only, like this launcher's own macOS build.
   NWH: {
     modId: "nwh",
     filenames: {
+      macos: "nwh_macos_arm64.zip",
+      windows: "nwh_windows_x64.zip",
       linux: "nwh_linux_x64.tar.gz",
     },
-    platforms: ["linux"],
     extractCommand: "extract_nwh",
     installCommand: "install_nwh",
     checkInstalledCommand: "is_nwh_installed",
@@ -78,19 +78,17 @@ function modPlatformInfo(mod) {
   return mod.platforms[currentPlatform] ?? mod.platforms.macos ?? mod;
 }
 
-// A handler existing isn't enough on its own anymore - NWH has one but only
-// actually works on Linux (see MOD_HANDLERS.NWH.platforms). Everything else
-// has no `platforms` restriction at all, so this is a no-op for them.
+// A handler can carry `platforms` to limit which OS it's offered on (NWH
+// used to be Linux-only). None does right now, so this is true for every
+// client with a handler.
 function modSupportedOnCurrentPlatform(name) {
   const handler = MOD_HANDLERS[name];
   return !!handler && (!handler.platforms || handler.platforms.includes(currentPlatform));
 }
 
 // Only clients that actually speak the multiplayer protocol can join -
-// OpenJO is single-player only. NWH is added in init() once currentPlatform
-// is known, rather than listed here, since it only belongs in this list on
-// Linux at all.
-const JOINABLE_CLIENTS = ["TommyternalJK2MV", "JK2MV"];
+// OpenJO is single-player only.
+const JOINABLE_CLIENTS = ["TommyternalJK2MV", "JK2MV", "NWH"];
 
 // The Servers page used to discover this list live from the community
 // master server, but that discovery query proved unreliable (consistently
@@ -343,54 +341,49 @@ function toggleFavoriteServer(address) {
   return true;
 }
 
-// Two pinned one-click actions on Home, above the general favorites list -
-// covering the app's two actual use cases (organised CTF play, and casual
-// defrag) instead of making everyone pick a server every time. "auto" means
-// "whichever joinable client is actually installed" rather than a fixed
-// choice, so both buttons work the moment any client is installed instead
-// of depending on one specific client being present.
-const PINNED_ACTIONS_KEY = "jk2launcher.pinnedActions";
-const DEFAULT_PINNED_ACTIONS = {
-  ctf: { server: "192.223.24.74:28070", client: "NWH" }, // NA East
-  defrag: { server: "176.103.220.40:28070", client: "TommyternalJK2MV" }, // freedom defrag
-};
+// The four game modes on Home - one banner each, tied to the client that
+// plays it. `defaultServer` is what Play joins until someone picks their own
+// with the gear; null means Play just opens the game to its main menu.
+// Campaign is OpenJO's single-player, so it has no server at all.
+const GAME_MODES = [
+  { id: "ctf", title: "Capture the Flag (NWH)", client: "NWH", defaultServer: "192.223.24.74:28070" }, // NA East
+  { id: "defrag", title: "Defrag (Tommyternal)", client: "TommyternalJK2MV", defaultServer: "176.103.220.40:28070" }, // freedom defrag
+  { id: "ffa", title: "FFA (JK2MV)", client: "JK2MV", defaultServer: null },
+  { id: "campaign", title: "Campaign (OpenJO)", client: "OpenJO", singlePlayer: true },
+];
+const MODE_SERVERS_KEY = "jk2launcher.modeServers";
+const LEGACY_PINNED_ACTIONS_KEY = "jk2launcher.pinnedActions"; // the old Play CTF / Play Defrag buttons
 
-function loadPinnedActions() {
+// Servers picked with the old Play CTF / Play Defrag buttons carry over, so
+// nobody's choice is lost to the redesign.
+function loadModeServers() {
+  const servers = Object.fromEntries(
+    GAME_MODES.filter((m) => !m.singlePlayer).map((m) => [m.id, m.defaultServer])
+  );
   try {
-    const parsed = JSON.parse(localStorage.getItem(PINNED_ACTIONS_KEY) ?? "null");
-    return {
-      ctf: { ...DEFAULT_PINNED_ACTIONS.ctf, ...parsed?.ctf },
-      defrag: { ...DEFAULT_PINNED_ACTIONS.defrag, ...parsed?.defrag },
-    };
+    const legacy = JSON.parse(localStorage.getItem(LEGACY_PINNED_ACTIONS_KEY) ?? "null");
+    if (legacy?.ctf?.server) servers.ctf = legacy.ctf.server;
+    if (legacy?.defrag?.server) servers.defrag = legacy.defrag.server;
+    Object.assign(servers, JSON.parse(localStorage.getItem(MODE_SERVERS_KEY) ?? "null"));
   } catch {
-    return structuredClone(DEFAULT_PINNED_ACTIONS);
+    // Private-browsing-style storage block - defaults it is.
+  }
+  return servers;
+}
+
+let modeServers = loadModeServers();
+
+function saveModeServers() {
+  try {
+    localStorage.setItem(MODE_SERVERS_KEY, JSON.stringify(modeServers));
+  } catch {
+    // Private-browsing-style storage block - the pick just won't stick.
   }
 }
 
-let pinnedActions = loadPinnedActions();
-
-function savePinnedActions() {
-  try {
-    localStorage.setItem(PINNED_ACTIONS_KEY, JSON.stringify(pinnedActions));
-  } catch {
-    // Private-browsing-style storage block - the customization just won't stick.
-  }
-}
-
-function pinnedActionLabel(actionId) {
-  return actionId === "ctf" ? "Play CTF" : "Play Defrag";
-}
-
-// NWH (the client organised CTF actually runs on) is only ever in
-// JOINABLE_CLIENTS on Linux (its only supported platform - see the FAQ) -
-// elsewhere the default "NWH" pin just never matches an installed entry and
-// falls through to whatever else is actually installed, same as "auto"
-// would, with playPinnedAction's warning explaining why.
-function resolvePinnedAction(actionId) {
-  const pin = pinnedActions[actionId];
-  const installedJoinable = JOINABLE_CLIENTS.filter((name) => modState[name]?.installed);
-  const client = installedJoinable.includes(pin.client) ? pin.client : installedJoinable[0];
-  return { server: pin.server, client };
+// The client a mode's Play button uses, or null where it can't run.
+function modeClient(mode) {
+  return modSupportedOnCurrentPlatform(mode.client) ? mode.client : null;
 }
 
 function serverDisplayName(address) {
@@ -399,7 +392,7 @@ function serverDisplayName(address) {
 }
 
 // `name` is the MOD_HANDLERS key, so a target can be filtered out on a
-// platform that can't install that client at all (NWH is Linux-only).
+// platform that can't install that client at all.
 const PK3_CLIENTS = [
   { id: "jk2mv", label: "JK2MV", name: "JK2MV" },
   { id: "tommyternal", label: "TommyternalJK2MV", name: "TommyternalJK2MV" },
@@ -428,12 +421,12 @@ const FAQ_ENTRIES = [
   {
     section: "Launcher",
     q: "Which clients can I install?",
-    a: "JK2MV (the modernised engine most other clients build on), TomArrow's Tommyternal fork (defrag/FFA-focused), and OpenJO (a stability-focused rebuild of the single-player campaign). All three run natively on macOS, Windows, and Linux.",
+    a: "NWH (the anti-cheat client organised CTF runs on), JK2MV (the modernised engine most other clients build on), TomArrow's Tommyternal fork (defrag/FFA-focused), and OpenJO (a stability-focused rebuild of the single-player campaign). All four run natively on macOS, Windows, and Linux.",
   },
   {
     section: "Launcher",
     q: "What about NWH?",
-    a: 'NWH (Capture the Flag - NWH) is the anti-cheat client organised CTF matches actually run on, but its current build is Linux-only - this launcher can\'t install or run it on macOS or Windows yet.',
+    a: "NWH is the anti-cheat client organised CTF matches run on. Install it from its page under Clients - there are builds for macOS (Apple Silicon), Windows and Linux, the same ones offered at jk2ctf.com/nwh-download.",
   },
   {
     section: "Launcher",
@@ -552,22 +545,74 @@ async function downloadFile(url, filename, expectedSha256) {
   return { verified: actual.toLowerCase() === expectedSha256.toLowerCase(), actual };
 }
 
+// The Clients group in the sidebar folds open and shut, and remembers which.
+// Opening a client from anywhere else (a Home banner's Install, say) opens it
+// too, so the active client is never hidden inside a closed group.
+const CLIENTS_GROUP_OPEN_KEY = "jk2launcher.clientsGroupOpen";
+let clientsGroupOpen = (() => {
+  try {
+    return localStorage.getItem(CLIENTS_GROUP_OPEN_KEY) !== "0";
+  } catch {
+    return true;
+  }
+})();
+
+function setClientsGroupOpen(open) {
+  clientsGroupOpen = open;
+  try {
+    localStorage.setItem(CLIENTS_GROUP_OPEN_KEY, open ? "1" : "0");
+  } catch {
+    // Private-browsing-style storage block - it just won't be remembered.
+  }
+  renderSidebar();
+}
+
+// What a client's dot and tag say in the sidebar. The dot carries installed
+// or not; text only appears when it adds something.
+function clientRowStatus(mod) {
+  const state = modState[mod.name] || {};
+  if (!modSupportedOnCurrentPlatform(mod.name)) {
+    const only = MOD_HANDLERS[mod.name]?.platforms;
+    const names = { linux: "Linux", macos: "macOS", windows: "Windows" };
+    return { installed: false, title: "Not available on this platform", tag: only ? `${only.map((p) => names[p] ?? p).join("/")} only` : "unsupported" };
+  }
+  // Not checked yet (see refreshModStates) - don't claim either way.
+  if (modState[mod.name] === undefined) return { installed: false, checking: true, title: "Checking...", tag: "" };
+  if (!state.installed) return { installed: false, title: "Not installed", tag: "" };
+  const upToDate = state.installedVersion && state.installedVersion === mod.version;
+  return { installed: true, title: upToDate ? "Installed" : "Update available", tag: upToDate ? "" : "update" };
+}
+
 function renderSidebar() {
   document.getElementById("home-nav-row").classList.toggle("active", selected === "__home__");
+  document.getElementById("ctf-nav-row").classList.toggle("active", selected === "__ctf__");
   document.getElementById("mods-nav-row").classList.toggle("active", selected === "__mods__");
+  document.getElementById("media-nav-row").classList.toggle("active", selected === "__media__");
+  document.getElementById("config-nav-row").classList.toggle("active", selected === "__config__");
   document.getElementById("servers-nav-row").classList.toggle("active", selected === "__servers__");
   document.getElementById("faq-nav-row").classList.toggle("active", selected === "__faq__");
   document.getElementById("sign-out-section").hidden = !session;
+
+  const clientSelected = mods.some((m) => m.name === selected);
+  const groupRow = document.getElementById("clients-group-row");
+  groupRow.classList.toggle("open", clientsGroupOpen);
+  groupRow.setAttribute("aria-expanded", String(clientsGroupOpen));
+  // Folded shut while viewing a client: the group row stands in as active.
+  groupRow.classList.toggle("active", clientSelected && !clientsGroupOpen);
+  document.getElementById("clients-group").hidden = !clientsGroupOpen;
+
+  // Leave a manifest error (and its Retry button) in place until it's retried.
+  if (!mods.length) return;
   document.getElementById("client-list").innerHTML = mods
     .map((mod) => {
-      const state = modState[mod.name] || {};
-      const status = state.installed ? "installed" : modSupportedOnCurrentPlatform(mod.name) ? "" : "unsupported";
-      const classes = ["client-row", mod.name === selected ? "active" : "", state.installed ? "installed" : ""]
+      const status = clientRowStatus(mod);
+      const classes = ["client-row", mod.name === selected ? "active" : "", status.installed ? "installed" : "", status.checking ? "checking" : ""]
         .filter(Boolean)
         .join(" ");
-      return `<div class="${classes}" data-name="${mod.name}">
-        <span class="client-row-name">${mod.displayName ?? mod.name}</span>
-        <span class="client-row-status">${status}</span>
+      return `<div class="${classes}" data-name="${escapeHtml(mod.name)}" title="${status.title}">
+        <span class="client-row-name">${escapeHtml(mod.displayName ?? mod.name)}</span>
+        ${status.tag ? `<span class="client-row-status ${status.tag === "update" ? "client-row-status--update" : ""}">${status.tag}</span>` : ""}
+        <span class="client-dot" aria-hidden="true"></span>
       </div>`;
     })
     .join("");
@@ -656,15 +701,15 @@ function feedRowHtml(item) {
   let sub = "";
   let accent = "var(--primary)";
   if (item.type === "match") {
-    text = `<b>Match #${item.ordinal}</b> logged &mdash; <span style="color: var(--team-red)">Red ${item.redScore}</span> : <span style="color: var(--team-blue)">${item.blueScore} Blue</span>`;
-    sub = `${item.playerCount} players`;
+    text = `<b>Match #${escapeHtml(item.ordinal)}</b> logged &mdash; <span style="color: var(--team-red)">Red ${escapeHtml(item.redScore)}</span> : <span style="color: var(--team-blue)">${escapeHtml(item.blueScore)} Blue</span>`;
+    sub = `${escapeHtml(item.playerCount)} players`;
   } else if (item.type === "crest") {
     accent = RARITY_COLORS[item.entry.rarity] ?? "var(--primary)";
-    text = `<b>${item.entry.playerName}</b> earned <span style="color: ${accent}">${item.entry.title}</span>`;
-    sub = item.entry.rarity ?? "";
+    text = `<b>${escapeHtml(item.entry.playerName)}</b> earned <span style="color: ${accent}">${escapeHtml(item.entry.title)}</span>`;
+    sub = escapeHtml(item.entry.rarity ?? "");
   } else {
-    text = `New demo: <b>${item.title}</b>${item.uploaderName ? ` by ${item.uploaderName}` : ""}`;
-    sub = item.gametype ?? "";
+    text = `New demo: <b>${escapeHtml(item.title)}</b>${item.uploaderName ? ` by ${escapeHtml(item.uploaderName)}` : ""}`;
+    sub = escapeHtml(item.gametype ?? "");
   }
   return `<div class="feed-row" style="--feed-accent: ${accent}">
     <span class="feed-row-icon">${FEED_ICONS[item.type] ?? ""}</span>
@@ -676,7 +721,14 @@ function feedRowHtml(item) {
   </div>`;
 }
 
+// Both feeds are kicked off from render, which can run several times before
+// the first answer is back - one request each is plenty.
+let activityFeedLoading = false;
+let recentVideosLoading = false;
+
 async function loadActivityFeed() {
+  if (activityFeedLoading) return;
+  activityFeedLoading = true;
   try {
     const { fetch } = window.__TAURI__.http;
     const res = await fetch(`${SORACLE_BASE}/api/activity-feed`);
@@ -685,10 +737,13 @@ async function loadActivityFeed() {
   } catch (err) {
     activityFeedError = String(err);
   }
-  if (selected === "__home__") renderMain();
+  activityFeedLoading = false;
+  if (selected === "__ctf__") scheduleMainRender();
 }
 
 async function loadRecentVideos() {
+  if (recentVideosLoading) return;
+  recentVideosLoading = true;
   try {
     const { fetch } = window.__TAURI__.http;
     const res = await fetch(`${SORACLE_BASE}/api/recent-videos`);
@@ -697,17 +752,19 @@ async function loadRecentVideos() {
   } catch {
     recentVideos = [];
   }
-  if (selected === "__home__") renderMain();
+  recentVideosLoading = false;
+  if (selected === "__ctf__") scheduleMainRender();
 }
 
 function recentVideoCardHtml(video) {
-  const thumb = `https://img.youtube.com/vi/${video.videoId}/hqdefault.jpg`;
-  const url = `https://www.youtube.com/watch?v=${video.videoId}`;
+  const id = encodeURIComponent(video.videoId ?? "");
+  const thumb = `https://img.youtube.com/vi/${id}/hqdefault.jpg`;
+  const url = `https://www.youtube.com/watch?v=${id}`;
   return `
     <a class="highlight-card" href="${url}" target="_blank" rel="noopener">
       <img src="${thumb}" alt="">
       <span class="highlight-card-play">&#9654;</span>
-      <span class="highlight-card-label">${video.title || "Watch"}</span>
+      <span class="highlight-card-label">${escapeHtml(video.title || "Watch")}</span>
     </a>
   `;
 }
@@ -728,115 +785,166 @@ function renderRecentHighlightsBlock() {
   `;
 }
 
-function pinnedActionButtonHtml(actionId) {
-  const resolved = resolvePinnedAction(actionId);
-  if (serverStatusCache[resolved.server] === undefined) {
-    loadServerStatus(resolved.server);
-  }
-  const status = serverStatusCache[resolved.server];
-  const meta = !status
-    ? "Checking..."
-    : status.error
-      ? "Unreachable right now"
-      : `${status.map} &middot; ${status.players.length}/${status.max_clients} players`;
-  const clientLabel = resolved.client
-    ? (mods.find((m) => m.name === resolved.client)?.displayName ?? resolved.client)
-    : "Install a client to use this";
+const modeMessages = {}; // mode id -> "Launching..." or an error, shown on its banner
 
+// Install state arrives a moment after launch (see refreshModStates) -
+// until then, say so rather than flash "isn't installed" and an Install
+// button at someone who has it installed.
+function modeChecking(mode) {
+  return modSupportedOnCurrentPlatform(mode.client) && modState[mode.client] === undefined;
+}
+
+function clientDisplayName(name) {
+  return mods.find((m) => m.name === name)?.displayName ?? name;
+}
+
+function modeMetaText(mode, client) {
+  if (modeMessages[mode.id]) return modeMessages[mode.id];
+  if (modeChecking(mode)) return "Checking...";
+  if (!client) return `Not available on ${currentPlatform === "macos" ? "macOS" : currentPlatform}`;
+  if (!modState[client]?.installed) return `${escapeHtml(clientDisplayName(client))} isn't installed yet`;
+  let text;
+  if (mode.singlePlayer) {
+    text = "Single-player";
+  } else {
+    const server = modeServers[mode.id];
+    if (!server) {
+      text = "No server picked &middot; opens the main menu";
+    } else {
+      const status = serverStatusCache[server];
+      if (status === undefined) loadServerStatus(server);
+      text = !status
+        ? `${server} &middot; checking...`
+        : status.error
+          ? `${server} &middot; unreachable right now`
+          : `${escapeHtml(stripQuakeColors(status.hostname))} &middot; ${escapeHtml(status.map)} &middot; ${status.players.length}/${status.max_clients} players`;
+    }
+  }
+  return text;
+}
+
+// Shared by the Home banners and the CTF page's own Play CTF button.
+function modePlayButtonHtml(mode, label = "Play") {
+  const client = modeClient(mode);
+  if (!client || modeChecking(mode)) {
+    return `<button class="mode-play-btn" disabled>${label}</button>`;
+  }
+  if (!modState[client]?.installed) {
+    // Not installed: take them to the client's page, where Install lives.
+    return `<button class="mode-play-btn mode-play-btn--install" data-mode-install="${client}">Install</button>`;
+  }
+  return `<button class="mode-play-btn" data-mode-play="${mode.id}">${label}</button>`;
+}
+
+function modeBannerHtml(mode) {
+  const client = modeClient(mode);
+  const button = modePlayButtonHtml(mode);
+  const gear = mode.singlePlayer
+    ? ""
+    : `<button class="mode-gear-btn" data-mode-server="${mode.id}" title="Choose a server" aria-label="Choose a server for ${mode.title}">⚙</button>`;
   return `
-    <div class="pinned-action">
-      <button class="pinned-action-btn" data-pinned-play="${actionId}" ${resolved.client ? "" : "disabled"}>${pinnedActionLabel(actionId)}</button>
-      <div class="pinned-action-info">
-        <span class="pinned-action-server">${serverDisplayName(resolved.server)}</span>
-        <span class="pinned-action-meta">${meta} &middot; ${clientLabel}</span>
+    <div class="mode-banner">
+      <img class="mode-banner-img" src="assets/banners/${mode.client.toLowerCase()}.jpg" alt="" data-on-error="remove">
+      <div class="mode-banner-text">
+        <h3 class="mode-banner-title">${mode.title}</h3>
+        <p class="mode-banner-meta">${modeMetaText(mode, client)}</p>
       </div>
-      <button class="pinned-action-edit-btn" data-pinned-edit="${actionId}" title="Customize ${pinnedActionLabel(actionId)}">⚙</button>
-      ${serverJoinMessage[resolved.server] ? `<p class="detail-status">${escapeHtml(serverJoinMessage[resolved.server])}</p>` : ""}
+      <div class="mode-banner-actions">${button}${gear}</div>
     </div>`;
 }
 
-function pinnedActionsHtml() {
-  return `<div class="pinned-actions">${pinnedActionButtonHtml("ctf")}${pinnedActionButtonHtml("defrag")}</div>`;
-}
-
-// A themed small form dialog, same overlay/backdrop-cancels pattern as
-// showConfirmDialog - resolves the picked {server, client}, or null if
-// cancelled.
-function editPinnedAction(actionId) {
-  const pin = pinnedActions[actionId];
-  const installedJoinable = JOINABLE_CLIENTS.filter((name) => modState[name]?.installed);
-  // Every known/favorited address, plus whatever's currently pinned even if
-  // it's since fallen off both lists - never silently drop the current pick.
-  const serverOptions = Array.from(new Set([...getFavoriteServers(), ...allServers(), pin.server]));
-
+// Resolves the picked address, "" for no server (open the main menu), or
+// null if cancelled.
+function pickModeServer(mode) {
+  const current = modeServers[mode.id] ?? "";
+  // Every known/favorited address, plus the current pick even if it's since
+  // fallen off both lists (or was typed in) - never silently drop it.
+  const listed = Array.from(new Set([...getFavoriteServers(), ...allServers(), ...(current ? [current] : [])]));
   return new Promise((resolve) => {
     const overlay = document.createElement("div");
     overlay.className = "confirm-overlay";
     overlay.innerHTML = `
       <div class="confirm-dialog confirm-dialog--wide">
-        <h3 class="confirm-title">Customize ${pinnedActionLabel(actionId)}</h3>
+        <h3 class="confirm-title">${mode.title.replace(/ \(.*\)$/, "")} server</h3>
         <label class="pinned-edit-field">
-          <span>Server</span>
-          <select class="pinned-edit-server">
-            ${serverOptions.map((addr) => `<option value="${addr}" ${addr === pin.server ? "selected" : ""}>${serverDisplayName(addr)}</option>`).join("")}
+          <span>Play joins</span>
+          <select class="mode-server-select">
+            <option value="" ${current ? "" : "selected"}>No server - open the main menu</option>
+            ${listed.map((addr) => `<option value="${addr}" ${addr === current ? "selected" : ""}>${escapeHtml(serverDisplayName(addr))}</option>`).join("")}
           </select>
         </label>
         <label class="pinned-edit-field">
-          <span>Client</span>
-          <select class="pinned-edit-client">
-            <option value="auto" ${pin.client === "auto" ? "selected" : ""}>Auto (first installed client)</option>
-            ${installedJoinable.map((name) => `<option value="${name}" ${pin.client === name ? "selected" : ""}>${mods.find((m) => m.name === name)?.displayName ?? name}</option>`).join("")}
-          </select>
+          <span>Or enter an address</span>
+          <input type="text" class="mode-server-input" placeholder="123.45.67.89:28070" spellcheck="false" autocomplete="off">
         </label>
+        <p class="dialog-error"></p>
         <div class="confirm-actions">
           <button class="confirm-cancel-btn">Cancel</button>
           <button class="confirm-ok-btn">Save</button>
         </div>
       </div>`;
     document.body.appendChild(overlay);
+    const input = overlay.querySelector(".mode-server-input");
+    const errorEl = overlay.querySelector(".dialog-error");
+
+    // Servers nobody has looked at yet show as bare addresses - look them up
+    // and swap their names in as answers arrive.
+    for (const option of overlay.querySelectorAll(".mode-server-select option[value]:not([value=''])")) {
+      if (serverStatusCache[option.value] !== undefined) continue;
+      loadServerStatus(option.value).then(() => {
+        option.textContent = serverDisplayName(option.value);
+      });
+    }
 
     function finish(result) {
       overlay.remove();
       resolve(result);
     }
+    function save() {
+      const typed = input.value.trim();
+      if (typed && !/^[A-Za-z0-9.-]+:\d{1,5}$/.test(typed)) {
+        errorEl.textContent = "Enter it as host:port, like 123.45.67.89:28070";
+        return;
+      }
+      finish(typed || overlay.querySelector(".mode-server-select").value);
+    }
     overlay.addEventListener("click", (e) => {
       if (e.target === overlay) finish(null);
     });
-    overlay.querySelector(".confirm-cancel-btn").addEventListener("click", () => finish(null));
-    overlay.querySelector(".confirm-ok-btn").addEventListener("click", () => {
-      finish({
-        server: overlay.querySelector(".pinned-edit-server").value,
-        client: overlay.querySelector(".pinned-edit-client").value,
-      });
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") save();
     });
+    overlay.querySelector(".confirm-cancel-btn").addEventListener("click", () => finish(null));
+    overlay.querySelector(".confirm-ok-btn").addEventListener("click", save);
   });
 }
 
-async function openPinnedActionEditor(actionId) {
-  const result = await editPinnedAction(actionId);
-  if (!result) return;
-  pinnedActions[actionId] = result;
-  savePinnedActions();
+async function chooseModeServer(modeId) {
+  const mode = GAME_MODES.find((m) => m.id === modeId);
+  const picked = await pickModeServer(mode);
+  if (picked === null) return;
+  modeServers[modeId] = picked || null;
+  saveModeServers();
   renderMain();
 }
 
-async function playPinnedAction(actionId) {
-  const resolved = resolvePinnedAction(actionId);
-  if (!resolved.client) return;
-  // NWH is the client organised CTF actually runs on, but it isn't
-  // installable in this launcher yet (see the FAQ) - "auto" can only ever
-  // land on an installed JOINABLE_CLIENTS entry, so warn rather than just
-  // silently joining with a substitute that some servers won't accept.
-  if (actionId === "ctf" && resolved.client !== "NWH") {
-    const clientLabel = mods.find((m) => m.name === resolved.client)?.displayName ?? resolved.client;
-    const proceed = await showConfirmDialog({
-      title: "Heads up",
-      message: `Some CTF servers require the NWH client for anti-cheat, which this launcher can't install yet. You'll be joining with ${clientLabel} instead.`,
-      confirmLabel: "Continue",
-    });
-    if (!proceed) return;
+async function playMode(modeId) {
+  const mode = GAME_MODES.find((m) => m.id === modeId);
+  const client = modeClient(mode);
+  if (!client || !modState[client]?.installed) return;
+  const { invoke } = window.__TAURI__.core;
+  const handler = MOD_HANDLERS[client];
+  modeMessages[modeId] = "Launching...";
+  renderMain();
+  try {
+    // play_openjo takes no address; the others treat a missing one as
+    // "just open the game".
+    await invoke(handler.playCommand, mode.singlePlayer ? {} : { connectAddress: modeServers[modeId] ?? null });
+    modeMessages[modeId] = "";
+  } catch (err) {
+    modeMessages[modeId] = `Error: ${escapeHtml(String(err))}`;
   }
-  await joinServer(resolved.client, resolved.server);
+  renderMain();
 }
 
 // One thin row per favorite, all sharing a single card - was one big
@@ -852,29 +960,29 @@ function favoriteServerRowHtml(address) {
     return `
       <div class="favorite-row">
         <span class="favorite-play-btn favorite-play-btn--disabled">Offline</span>
-        <span class="favorite-row-name">${address}</span>
+        <span class="favorite-row-name">${escapeHtml(address)}</span>
         <span class="favorite-row-meta">Unreachable right now</span>
-        <button class="server-favorite-btn active" data-address="${address}" title="Remove favorite">★</button>
+        <button class="server-favorite-btn active" data-address="${escapeHtml(address)}" title="Remove favorite">★</button>
       </div>`;
   }
   const installedJoinable = JOINABLE_CLIENTS.filter((name) => modState[name]?.installed);
-  const nameHtml = `<span class="favorite-row-name">${stripQuakeColors(data.hostname)}</span>`;
+  const nameHtml = `<span class="favorite-row-name">${serverText(data.hostname)}</span>`;
   let playHtml;
   let selectHtml = "";
   if (installedJoinable.length === 0) {
     playHtml = `<span class="favorite-play-btn favorite-play-btn--disabled">Install a client</span>`;
   } else if (installedJoinable.length === 1) {
-    playHtml = `<button class="favorite-play-btn server-join-btn" data-address="${address}" data-client="${installedJoinable[0]}">Play</button>`;
+    playHtml = `<button class="favorite-play-btn server-join-btn" data-address="${escapeHtml(address)}" data-client="${installedJoinable[0]}">Play</button>`;
   } else {
     // More than one option installed - let them pick, same control as the
     // Servers page, instead of silently guessing which one they meant. The
     // select sits after the server name (not next to the button) so the
     // server you're looking at reads first; .closest(".favorite-row") in
     // the click handler still finds it regardless of where it sits in the row.
-    playHtml = `<button class="favorite-play-btn server-join-btn" data-address="${address}">Play</button>`;
+    playHtml = `<button class="favorite-play-btn server-join-btn" data-address="${escapeHtml(address)}">Play</button>`;
     selectHtml = `
       <select class="server-client-select">
-        ${installedJoinable.map((name) => `<option value="${name}">${mods.find((m) => m.name === name)?.displayName ?? name}</option>`).join("")}
+        ${installedJoinable.map((name) => `<option value="${name}">${escapeHtml(clientDisplayName(name))}</option>`).join("")}
       </select>`;
   }
   return `
@@ -882,8 +990,8 @@ function favoriteServerRowHtml(address) {
       ${playHtml}
       ${nameHtml}
       ${selectHtml}
-      <span class="favorite-row-meta">${data.map} &middot; ${data.players.length}/${data.max_clients} players</span>
-      <button class="server-favorite-btn active" data-address="${address}" title="Remove favorite">★</button>
+      <span class="favorite-row-meta">${escapeHtml(data.map)} &middot; ${escapeHtml(data.players.length)}/${escapeHtml(data.max_clients)} players</span>
+      <button class="server-favorite-btn active" data-address="${escapeHtml(address)}" title="Remove favorite">★</button>
       ${serverJoinMessage[address] ? `<p class="detail-status">${escapeHtml(serverJoinMessage[address])}</p>` : ""}
     </div>`;
 }
@@ -896,17 +1004,24 @@ function favoriteServerBlocksHtml() {
 
 function renderHomeView(mainEl) {
   const welcome = session
-    ? `<div class="home-welcome"><h2>Welcome back, ${session.name}</h2></div>`
+    ? `<div class="home-welcome"><h2>Welcome back, ${escapeHtml(session.name)}</h2></div>`
     : `<div class="home-welcome"><h2>Welcome to JK2 Launcher</h2></div>`;
+  mainEl.innerHTML = `
+    ${welcome}
+    <p class="home-strap">Play and install community-verified clients for Jedi Knight II: Jedi Outcast.</p>
+    <div class="mode-banners">${GAME_MODES.map(modeBannerHtml).join("")}</div>
+  `;
+}
 
-  // Kept out of the initial welcome block and rendered further down (after
-  // the strap and favorite-server bar) so a first-time visitor's first
-  // impression isn't a login form - the strap line is what should read
-  // first.
-  const loginPromptHtml = session
-    ? ""
+// Everything JK2CTF: your stats once signed in, the highlight reel and what
+// the playerbase has been up to.
+function renderCtfView(mainEl) {
+  const ctfMod = mods.find((m) => m.name === "NWH");
+  const ctfMode = GAME_MODES.find((m) => m.id === "ctf");
+  const accountHtml = session
+    ? `<p class="home-feed-label">Your Stats</p>${ctfMod ? renderStatsBlock(ctfMod) : ""}`
     : `<div class="home-login-prompt">
-         <p>Sign in with your JK2CTF player account to see your stats here and on Capture the Flag - NWH.</p>
+         <p>Sign in with your JK2CTF player account to see your stats.</p>
          <form id="soracle-login-form" class="login-form">
            <input name="name" placeholder="Player name" autocomplete="username" required>
            <input name="password" type="password" placeholder="Password" autocomplete="current-password" required>
@@ -917,7 +1032,7 @@ function renderHomeView(mainEl) {
 
   let feedHtml;
   if (activityFeedError) {
-    feedHtml = `<p class="detail-status">Couldn't load activity: ${activityFeedError}</p>`;
+    feedHtml = `<p class="detail-status">Couldn't load activity: ${escapeHtml(activityFeedError)}</p>`;
   } else if (!activityFeed) {
     feedHtml = `<p class="detail-status">Loading...</p>`;
     loadActivityFeed();
@@ -928,28 +1043,33 @@ function renderHomeView(mainEl) {
   }
 
   mainEl.innerHTML = `
-    ${welcome}
-    <p class="home-strap">Download, update and launch a client from the sidebar, and see what the playerbase has been up to below.</p>
-    ${pinnedActionsHtml()}
-    ${favoriteServerBlocksHtml()}
-    ${loginPromptHtml}
+    <div class="detail-header"><h2>Capture The Flag</h2></div>
+    <p class="detail-description">Organised Capture the Flag on JK2CTF - your stats, the latest highlights, and what the playerbase has been up to.</p>
+    <div class="ctf-play-row">
+      ${modePlayButtonHtml(ctfMode, "Play CTF")}
+      <span class="ctf-play-meta">${modeMetaText(ctfMode, modeClient(ctfMode))}</span>
+      <a class="ctf-site-btn" href="${SORACLE_BASE}" target="_blank" rel="noopener">Visit JK2CTF.com <span aria-hidden="true">&#8599;</span></a>
+    </div>
+    ${accountHtml}
     ${renderRecentHighlightsBlock()}
     <p class="home-feed-label">Recent Activity</p>
     ${feedHtml}
   `;
 }
 
-// Strips idTech3 caret color codes (^1, ^7, etc.) and raw control bytes some
+// Strips idTech3 caret color codes and raw control bytes some
 // servers throw into their hostname/player names (seen in the wild as
 // literal \x01 bytes, presumably an old anti-spoof or client-specific trick)
 // - both render as garbled box glyphs otherwise.
 function stripQuakeColors(s) {
-  return (s ?? "").replace(/\^[0-9]/g, "").replace(/[\x00-\x1f]/g, "");
+  // JK2 reads ^ plus any character but another ^ as a color code - not just
+  // ^0-^9 (NWH New Jersey's hostname uses ^_).
+  return (s ?? "").replace(/\^[^^]/g, "").replace(/[\x00-\x1f]/g, "");
 }
 
 const serverStatusLoading = new Set(); // addresses with a query already in flight
 
-// Shared by the Home favorite-server bar and the Servers page - a single
+// Shared by the Home mode banners and the Servers page - a single
 // address, queried directly and cached until the app restarts or Refresh
 // clears it.
 async function loadServerStatus(address) {
@@ -965,7 +1085,7 @@ async function loadServerStatus(address) {
   }
   // Re-render wherever this result is actually shown, regardless of which
   // view triggered the load in the first place.
-  if (selected === "__home__" || selected === "__servers__") renderMain();
+  if (selected === "__home__" || selected === "__ctf__" || selected === "__servers__") scheduleMainRender();
 }
 
 async function joinServer(clientName, address) {
@@ -994,16 +1114,16 @@ function serverRowHtml(data) {
       ? `Up to ${MAX_FAVORITE_SERVERS} favorites - remove one first`
       : "Set as favorite";
   const summaryHtml = `
-    <div class="server-row-summary" data-address="${data.address}">
-      <button class="server-favorite-btn ${isFavorite ? "active" : ""}" data-address="${data.address}" title="${favoriteTitle}" ${atFavoriteLimit ? "disabled" : ""}>${isFavorite ? "★" : "☆"}</button>
-      <span class="server-row-name">${stripQuakeColors(data.hostname)}</span>
-      <span class="server-row-map">${data.map}</span>
-      <span class="server-row-players">${data.players.length}/${data.max_clients}</span>
-      <span class="server-row-ping">${data.ping_ms}ms</span>
+    <div class="server-row-summary" data-address="${escapeHtml(data.address)}">
+      <button class="server-favorite-btn ${isFavorite ? "active" : ""}" data-address="${escapeHtml(data.address)}" title="${favoriteTitle}" ${atFavoriteLimit ? "disabled" : ""}>${isFavorite ? "★" : "☆"}</button>
+      <span class="server-row-name">${serverText(data.hostname)}</span>
+      <span class="server-row-map">${escapeHtml(data.map)}</span>
+      <span class="server-row-players">${escapeHtml(data.players.length)}/${escapeHtml(data.max_clients)}</span>
+      <span class="server-row-ping">${escapeHtml(data.ping_ms)}ms</span>
       <span class="server-row-caret">${isExpanded ? "▾" : "▸"}</span>
     </div>`;
   const removeHtml = isCustomServer(data.address)
-    ? `<button class="server-remove-btn" data-address="${data.address}">Remove from list</button>`
+    ? `<button class="server-remove-btn" data-address="${escapeHtml(data.address)}">Remove from list</button>`
     : "";
   if (!isExpanded) {
     return `<div class="server-row">${summaryHtml}</div>`;
@@ -1011,23 +1131,23 @@ function serverRowHtml(data) {
   const installedJoinable = JOINABLE_CLIENTS.filter((name) => modState[name]?.installed);
   const joinHtml =
     installedJoinable.length === 0
-      ? `<p class="detail-status">Install Tommyternal or JK2MV to join this server.</p>`
+      ? `<p class="detail-status">Install NWH, Tommyternal or JK2MV to join this server.</p>`
       : `<div class="server-join">
           <select class="server-client-select">
-            ${installedJoinable.map((name) => `<option value="${name}">${mods.find((m) => m.name === name)?.displayName ?? name}</option>`).join("")}
+            ${installedJoinable.map((name) => `<option value="${name}">${escapeHtml(clientDisplayName(name))}</option>`).join("")}
           </select>
-          <button class="server-join-btn" data-address="${data.address}">Join</button>
+          <button class="server-join-btn" data-address="${escapeHtml(data.address)}">Join</button>
         </div>`;
   const playerRows = data.players.length
     ? data.players
-        .map((p) => `<li><span>${stripQuakeColors(p.name)}</span><span class="server-player-score">${p.score}</span></li>`)
+        .map((p) => `<li><span>${serverText(p.name)}</span><span class="server-player-score">${escapeHtml(p.score)}</span></li>`)
         .join("")
     : `<li class="server-empty">No players connected</li>`;
   return `
     <div class="server-row expanded">
       ${summaryHtml}
       <div class="server-row-details">
-        <p class="server-meta">${data.address}</p>
+        <p class="server-meta">${escapeHtml(data.address)}</p>
         <ul class="server-player-list">${playerRows}</ul>
         ${joinHtml}
         <p class="detail-status">${escapeHtml(serverJoinMessage[data.address] ?? "")}</p>
@@ -1044,11 +1164,11 @@ function unreachableCustomServerRowHtml(address) {
     <div class="server-row server-row--unreachable">
       <div class="server-row-static">
         <span></span>
-        <span class="server-row-name">${address}</span>
+        <span class="server-row-name">${escapeHtml(address)}</span>
         <span class="server-row-map">Not responding</span>
         <span class="server-row-players"></span>
         <span class="server-row-ping"></span>
-        <button class="server-remove-btn server-remove-btn--inline" data-address="${address}" title="Remove from list">×</button>
+        <button class="server-remove-btn server-remove-btn--inline" data-address="${escapeHtml(address)}" title="Remove from list">×</button>
       </div>
     </div>`;
 }
@@ -1092,7 +1212,8 @@ function renderServersView(mainEl) {
       <h2>Servers</h2>
       <button class="server-refresh-btn" id="server-refresh-btn">Refresh</button>
     </div>
-    <p class="detail-description">Known JK2 1.02 community servers, queried directly - star a favorite for a one-click join from Home, click a row for details.</p>
+    <p class="detail-description">Known JK2 1.02 community servers, queried directly - star a favorite to keep it pinned up top for a one-click join, click a row for details.</p>
+    ${favoriteServerBlocksHtml()}
     <div class="server-add">
       <input class="server-add-input" id="server-add-input" type="text" placeholder="Add a server - e.g. 1.2.3.4:28070" spellcheck="false" autocomplete="off" value="${escapeHtml(addServerDraft)}" />
       <button class="server-refresh-btn" id="server-add-btn">Add server</button>
@@ -1163,6 +1284,23 @@ function renderMainPreservingScroll() {
   mainEl.scrollTop = scrollTop;
 }
 
+// For results that arrive on their own schedule - server replies, feeds,
+// stats. Fourteen server replies landing over a few hundred ms used to mean
+// fourteen full rebuilds of the page. Now the first shows straight away and
+// the rest share one rebuild every 250ms, scroll position kept.
+const MAIN_RENDER_INTERVAL_MS = 250;
+let mainRenderTimer = null;
+let lastMainRender = 0;
+function scheduleMainRender() {
+  if (mainRenderTimer) return;
+  const wait = Math.max(0, MAIN_RENDER_INTERVAL_MS - (performance.now() - lastMainRender));
+  mainRenderTimer = setTimeout(() => {
+    mainRenderTimer = null;
+    lastMainRender = performance.now();
+    renderMainPreservingScroll();
+  }, wait);
+}
+
 async function addPk3Mods() {
   const { invoke } = window.__TAURI__.core;
   try {
@@ -1211,16 +1349,17 @@ async function removePk3Mod(filename) {
 
 function pk3RowHtml(mod) {
   const isAll = mod.targets.includes("all");
-  const allCheckbox = `<label class="pk3-target"><input type="checkbox" data-filename="${mod.filename}" data-target="all" ${isAll ? "checked" : ""}> All Clients</label>`;
+  const filename = escapeHtml(mod.filename);
+  const allCheckbox = `<label class="pk3-target"><input type="checkbox" data-filename="${filename}" data-target="all" ${isAll ? "checked" : ""}> All Clients</label>`;
   const clientCheckboxes = pk3TargetClients().map((c) => {
     const checked = !isAll && mod.targets.includes(c.id);
-    return `<label class="pk3-target"><input type="checkbox" data-filename="${mod.filename}" data-target="${c.id}" ${isAll ? "disabled" : ""} ${checked ? "checked" : ""}> ${c.label}</label>`;
+    return `<label class="pk3-target"><input type="checkbox" data-filename="${filename}" data-target="${c.id}" ${isAll ? "disabled" : ""} ${checked ? "checked" : ""}> ${c.label}</label>`;
   }).join("");
   return `
     <div class="pk3-row">
-      <span class="pk3-name">${mod.filename}</span>
+      <span class="pk3-name">${filename}</span>
       <div class="pk3-targets">${allCheckbox}${clientCheckboxes}</div>
-      <button class="pk3-remove-btn" data-filename="${mod.filename}">Remove</button>
+      <button class="pk3-remove-btn" data-filename="${filename}">Remove</button>
     </div>
   `;
 }
@@ -1272,16 +1411,16 @@ async function downloadMonolithMod(url, filename, btn) {
 function monolithCardHtml(mod) {
   const filename = mod.download_url.split("/").pop();
   const thumb = mod.preview_image
-    ? `<img class="monolith-thumb" src="${mod.preview_image}" alt="" onerror="this.style.visibility='hidden'">`
+    ? `<img class="monolith-thumb" src="${safeHttpUrl(mod.preview_image)}" alt="" data-on-error="hide">`
     : `<div class="monolith-thumb monolith-thumb-empty"></div>`;
   return `
     <div class="monolith-card">
       ${thumb}
       <div class="monolith-info">
-        <p class="monolith-name">${mod.name}</p>
-        <p class="monolith-meta">${mod.author || "Unknown"} &middot; ${mod.category || "&mdash;"} &middot; ${mod.size || ""}</p>
+        <p class="monolith-name">${escapeHtml(mod.name)}</p>
+        <p class="monolith-meta">${escapeHtml(mod.author || "Unknown")} &middot; ${mod.category ? escapeHtml(mod.category) : "&mdash;"} &middot; ${escapeHtml(mod.size || "")}</p>
       </div>
-      <button class="monolith-download-btn" data-url="${mod.download_url}" data-filename="${filename}">Download</button>
+      <button class="monolith-download-btn" data-url="${escapeHtml(mod.download_url)}" data-filename="${escapeHtml(filename)}">Download</button>
     </div>
   `;
 }
@@ -1303,7 +1442,7 @@ function renderMonolithResults() {
           m.category?.toLowerCase().includes(term)
       )
     : monolithCatalog;
-  if (!matches.length) return `<p class="detail-status">No mods match "${monolithSearch}".</p>`;
+  if (!matches.length) return `<p class="detail-status">No mods match "${escapeHtml(monolithSearch)}".</p>`;
 
   const totalPages = Math.ceil(matches.length / MONOLITH_RESULTS_LIMIT);
   monolithPage = Math.min(monolithPage, totalPages - 1);
@@ -1326,7 +1465,7 @@ function renderMonolithBrowser() {
   return `
     <p class="home-feed-label" style="margin-top: 2rem;">Browse Community Mods</p>
     <p class="monolith-credit">Thanks to Flate for hosting these mods at Monolith.</p>
-    <input type="text" id="monolith-search" class="monolith-search-input" placeholder="Search by name, author, or category..." value="${monolithSearch}">
+    <input type="text" id="monolith-search" class="monolith-search-input" placeholder="Search by name, author, or category..." value="${escapeHtml(monolithSearch)}">
     <div id="monolith-results">${renderMonolithResults()}</div>
   `;
 }
@@ -1338,7 +1477,7 @@ const INSTALLED_MODS_PAGE_SIZE = 60;
 function renderInstalledModsResults() {
   const term = installedModsSearch.trim().toLowerCase();
   const matches = term ? pk3Mods.filter((m) => m.filename.toLowerCase().includes(term)) : pk3Mods;
-  if (!matches.length) return `<p class="detail-status">No installed mods match "${installedModsSearch}".</p>`;
+  if (!matches.length) return `<p class="detail-status">No installed mods match "${escapeHtml(installedModsSearch)}".</p>`;
 
   const totalPages = Math.ceil(matches.length / INSTALLED_MODS_PAGE_SIZE);
   installedModsPage = Math.min(installedModsPage, totalPages - 1);
@@ -1361,7 +1500,7 @@ function renderInstalledModsResults() {
 
 function renderModsView(mainEl) {
   if (pk3ModsError) {
-    mainEl.innerHTML = `<div class="detail-header"><h2>Mods</h2></div><p class="detail-status">Couldn't load mods: ${pk3ModsError}</p>`;
+    mainEl.innerHTML = `<div class="detail-header"><h2>Mods</h2></div><p class="detail-status">Couldn't load mods: ${escapeHtml(pk3ModsError)}</p>`;
     return;
   }
   if (pk3Mods === null) {
@@ -1370,7 +1509,7 @@ function renderModsView(mainEl) {
     return;
   }
   const installedHtml = pk3Mods.length
-    ? `<input type="text" id="installed-mods-search" class="monolith-search-input" placeholder="Search your installed mods..." value="${installedModsSearch}">
+    ? `<input type="text" id="installed-mods-search" class="monolith-search-input" placeholder="Search your installed mods..." value="${escapeHtml(installedModsSearch)}">
        <div id="installed-mods-results">${renderInstalledModsResults()}</div>`
     : `<p class="detail-status">No mods added yet.</p>`;
   mainEl.innerHTML = `
@@ -1383,6 +1522,800 @@ function renderModsView(mainEl) {
   `;
 }
 
+// --- Config: named presets of binds and settings, applied per client -------
+// The Rust side owns the data (config_presets.json) and does the reading
+// and writing; this is the list over it. Every command hands back the whole
+// view, so each action is: call, store the result, re-render.
+
+let configView = null; // from list_config_presets, or null while loading
+let configError = null;
+let configStatus = "";
+
+async function loadConfigPresets() {
+  try {
+    const { invoke } = window.__TAURI__.core;
+    configView = await invoke("list_config_presets");
+    configError = null;
+  } catch (err) {
+    configError = String(err);
+  }
+  if (selected === "__config__") renderMainPreservingScroll();
+}
+
+function setConfigStatus(message) {
+  configStatus = message;
+  const el = document.getElementById("config-status");
+  if (el) el.textContent = message;
+}
+
+async function configAction(command, args, busyMessage = "") {
+  if (busyMessage) setConfigStatus(busyMessage);
+  try {
+    const { invoke } = window.__TAURI__.core;
+    const result = await invoke(command, args);
+    if (result === null) {
+      // A cancelled file dialog.
+      setConfigStatus("");
+      return;
+    }
+    configView = result;
+    configStatus = "";
+    renderMainPreservingScroll();
+  } catch (err) {
+    setConfigStatus(`Error: ${err}`);
+  }
+}
+
+// A small one-field dialog, same shell as the others. `submit` runs on
+// Save and throws to keep the dialog open with its message shown.
+function showTextDialog({ title, label, value, confirmLabel = "Save", multiline = false, submit }) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "confirm-overlay";
+    overlay.innerHTML = `
+      <div class="confirm-dialog ${multiline ? "confirm-dialog--editor" : "confirm-dialog--wide"}">
+        <h3 class="confirm-title">${escapeHtml(title)}</h3>
+        <label class="pinned-edit-field">
+          <span>${escapeHtml(label)}</span>
+          ${multiline
+            ? `<textarea class="dialog-textarea" spellcheck="false">${escapeHtml(value)}</textarea>`
+            : `<input type="text" class="dialog-input" value="${escapeHtml(value)}" spellcheck="false" autocomplete="off">`}
+        </label>
+        <p class="dialog-error"></p>
+        <div class="confirm-actions">
+          <button class="confirm-cancel-btn">Cancel</button>
+          <button class="confirm-ok-btn">${confirmLabel}</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const field = overlay.querySelector(".dialog-input, .dialog-textarea");
+    const errorEl = overlay.querySelector(".dialog-error");
+    field.focus();
+    if (!multiline) field.select();
+
+    function finish(result) {
+      overlay.remove();
+      resolve(result);
+    }
+    async function save() {
+      try {
+        finish(await submit(field.value));
+      } catch (err) {
+        errorEl.textContent = String(err);
+      }
+    }
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay) finish(null);
+    });
+    field.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !multiline) save();
+      if (e.key === "Escape") finish(null);
+    });
+    overlay.querySelector(".confirm-cancel-btn").addEventListener("click", () => finish(null));
+    overlay.querySelector(".confirm-ok-btn").addEventListener("click", save);
+  });
+}
+
+// "Preset 1", "Preset 2", ... - the lowest number not already taken.
+function nextPresetName() {
+  const taken = new Set(configView.presets.map((p) => p.name.toLowerCase()));
+  for (let n = 1; ; n++) {
+    if (!taken.has(`preset ${n}`)) return `Preset ${n}`;
+  }
+}
+
+async function savePresetFromClient(clientId) {
+  const { invoke } = window.__TAURI__.core;
+  const view = await showTextDialog({
+    title: `Save from ${clientLabel(clientId)}`,
+    label: "Preset name",
+    value: nextPresetName(),
+    submit: (name) => invoke("save_preset_from_client", { clientId, name }),
+  });
+  if (!view) return;
+  configView = view;
+  renderMainPreservingScroll();
+}
+
+async function renameConfigPreset(id) {
+  const preset = configView.presets.find((p) => p.id === id);
+  if (!preset) return;
+  const { invoke } = window.__TAURI__.core;
+  const view = await showTextDialog({
+    title: "Rename preset",
+    label: "Name",
+    value: preset.name,
+    submit: (name) => invoke("rename_config_preset", { id, name }),
+  });
+  if (!view) return;
+  configView = view;
+  renderMainPreservingScroll();
+}
+
+async function editConfigPreset(id) {
+  const preset = configView.presets.find((p) => p.id === id);
+  if (!preset) return;
+  const { invoke } = window.__TAURI__.core;
+  let text;
+  try {
+    text = await invoke("get_preset_text", { id });
+  } catch (err) {
+    setConfigStatus(`Error: ${err}`);
+    return;
+  }
+  const view = await showTextDialog({
+    title: `Edit ${preset.name}`,
+    label: "One bind or setting per line. Anything else is dropped on save.",
+    value: text,
+    multiline: true,
+    submit: (edited) => invoke("set_preset_text", { id, text: edited }),
+  });
+  if (!view) return;
+  configView = view;
+  renderMainPreservingScroll();
+}
+
+async function deleteConfigPreset(id) {
+  const preset = configView.presets.find((p) => p.id === id);
+  if (!preset) return;
+  const used = preset.applied_to.length;
+  const confirmed = await showConfirmDialog({
+    title: "Delete preset?",
+    message: `${escapeHtml(preset.name)} will be deleted.${used ? ` The ${used === 1 ? "client" : `${used} clients`} using it will go back to ${used === 1 ? "its" : "their"} own settings.` : ""}`,
+    confirmLabel: "Delete",
+    danger: true,
+  });
+  if (!confirmed) return;
+  configAction("delete_config_preset", { id });
+}
+
+// A chip toggled on a preset's row: "all" means every client; a client
+// chip adds or removes just that one.
+function togglePresetClient(id, target, checked) {
+  const preset = configView.presets.find((p) => p.id === id);
+  if (!preset) return;
+  let clients;
+  if (target === "all") {
+    clients = checked ? pk3TargetClients().map((c) => c.id) : [];
+  } else {
+    clients = preset.applied_to.filter((c) => c !== target);
+    if (checked) clients.push(target);
+  }
+  configAction("assign_config_preset", { id, clients });
+}
+
+function presetCardHtml(preset) {
+  const clients = pk3TargetClients();
+  const all = clients.every((c) => preset.applied_to.includes(c.id));
+  const chips = [
+    `<label class="pk3-target"><input type="checkbox" data-preset-client="${preset.id}" data-target="all" ${all ? "checked" : ""}> All Clients</label>`,
+    ...clients.map((c) => {
+      const on = preset.applied_to.includes(c.id);
+      return `<label class="pk3-target"><input type="checkbox" data-preset-client="${preset.id}" data-target="${c.id}" ${all ? "disabled" : ""} ${on ? "checked" : ""}> ${escapeHtml(clientLabel(c.id))}</label>`;
+    }),
+  ].join("");
+  const counts = preset.controls_only
+    ? `${preset.binds} binds`
+    : `${preset.binds} binds, ${preset.settings} settings`;
+  const origin = preset.source_client ? `Saved from ${escapeHtml(clientLabel(preset.source_client))}` : escapeHtml(preset.origin);
+  return `
+    <div class="preset-card">
+      <div class="preset-head">
+        <div class="preset-info">
+          <p class="preset-name">${escapeHtml(preset.name)}</p>
+          <p class="preset-meta">${origin} &middot; ${formatMediaDate(preset.updated)} &middot; ${counts}</p>
+        </div>
+        <div class="preset-actions">
+          <label class="pk3-target preset-scope" title="Only the binds, for a client whose other settings shouldn't change"><input type="checkbox" data-preset-controls-only="${preset.id}" ${preset.controls_only ? "checked" : ""}> Controls only</label>
+          ${preset.source_client ? `<button class="change-folder" data-preset-update="${preset.id}">Update</button>` : ""}
+          <button class="change-folder" data-preset-rename="${preset.id}">Rename</button>
+          <button class="change-folder" data-preset-edit="${preset.id}">Edit</button>
+          <button class="pk3-remove-btn" data-preset-delete="${preset.id}">Delete</button>
+        </div>
+      </div>
+      <div class="preset-chips"><span class="preset-chips-label">Applied to</span>${chips}</div>
+    </div>`;
+}
+
+function renderConfigView(mainEl) {
+  const header = `<div class="detail-header"><h2>Config</h2></div>
+    <p class="detail-description">Save a client's binds and settings as a preset, or import a .cfg, then apply it to any client. Presets apply when a client is launched from here. Your clients' own config files are never edited.</p>`;
+  if (configError) {
+    mainEl.innerHTML = `${header}<p class="detail-status">Couldn't load presets: ${escapeHtml(configError)}</p>`;
+    return;
+  }
+  if (configView === null) {
+    mainEl.innerHTML = `${header}<p class="detail-status">Loading...</p>`;
+    loadConfigPresets();
+    return;
+  }
+
+  const sources = configView.clients.filter((c) => c.has_cfg && modSupportedOnCurrentPlatform(PK3_CLIENTS.find((p) => p.id === c.id)?.name));
+  const saveFromHtml = sources.length
+    ? sources.map((c) => `<button class="change-folder" data-preset-save-from="${c.id}">${escapeHtml(clientLabel(c.id))}</button>`).join("")
+    : `<span class="detail-status">No client has saved a config yet - run one first.</span>`;
+  const listHtml = configView.presets.length
+    ? configView.presets.map(presetCardHtml).join("")
+    : `<p class="detail-status">No presets yet.</p>`;
+
+  mainEl.innerHTML = `
+    ${header}
+    <div class="preset-toolbar">
+      <span class="preset-toolbar-label">Save from</span>
+      ${saveFromHtml}
+      <span class="preset-toolbar-sep"></span>
+      <button class="change-folder" id="preset-import-btn">Import .cfg...</button>
+    </div>
+    <p class="detail-status" id="config-status">${escapeHtml(configStatus)}</p>
+    <div class="preset-list">${listHtml}</div>
+    <p class="detail-status preset-note">A client uses one preset at a time; applying one takes it off whichever preset had it. Launching from here always writes the preset first. For a client you start some other way, run <code>exec launcher_shared.cfg</code> in its console.</p>
+  `;
+}
+
+// Returns true when the click belonged to the Config page.
+function handleConfigClick(e) {
+  const saveBtn = e.target.closest("[data-preset-save-from]");
+  if (saveBtn) {
+    savePresetFromClient(saveBtn.dataset.presetSaveFrom);
+    return true;
+  }
+  if (e.target.closest("#preset-import-btn")) {
+    configAction("import_config_preset", {}, "Choose a file...");
+    return true;
+  }
+  const updateBtn = e.target.closest("[data-preset-update]");
+  if (updateBtn) {
+    configAction("update_preset_from_client", { id: updateBtn.dataset.presetUpdate }, "Reading...");
+    return true;
+  }
+  const renameBtn = e.target.closest("[data-preset-rename]");
+  if (renameBtn) {
+    renameConfigPreset(renameBtn.dataset.presetRename);
+    return true;
+  }
+  const editBtn = e.target.closest("[data-preset-edit]");
+  if (editBtn) {
+    editConfigPreset(editBtn.dataset.presetEdit);
+    return true;
+  }
+  const deleteBtn = e.target.closest("[data-preset-delete]");
+  if (deleteBtn) {
+    deleteConfigPreset(deleteBtn.dataset.presetDelete);
+    return true;
+  }
+  return false;
+}
+
+// --- Media: screenshots and demos from every client ---------------------------
+// Where each client actually saves these is worked out on the Rust side
+// (see list_media) - a single client can have them spread over base/, its
+// launchermods_ folder and its own home folder, depending on when they were
+// taken. Here it's one list, filtered by kind and client.
+
+let mediaItems = null; // list from list_media, or null while loading
+let mediaError = null;
+let mediaKind = "screenshot"; // or "demo"
+let mediaClient = "all";
+let mediaSearch = "";
+let mediaPage = 0;
+let mediaSelectedPath = null;
+const MEDIA_PAGE_SIZE = 48;
+
+// path -> blob: URL, or "" when that screenshot couldn't be previewed.
+// Thumbnails are generated and cached on disk by the Rust side; this only
+// stops one session from asking for the same one twice.
+const mediaThumbUrls = new Map();
+const mediaThumbsLoading = new Set();
+
+async function loadMedia() {
+  try {
+    const { invoke } = window.__TAURI__.core;
+    mediaItems = await invoke("list_media");
+    mediaError = null;
+  } catch (err) {
+    mediaError = String(err);
+  }
+  if (selected === "__media__") renderMainPreservingScroll();
+}
+
+// Fresh scan every time - a new screenshot or demo since the last visit is
+// exactly what someone opening this tab is looking for.
+function refreshMedia() {
+  for (const url of mediaThumbUrls.values()) if (url) URL.revokeObjectURL(url);
+  mediaThumbUrls.clear();
+  mediaItems = null;
+  mediaError = null;
+}
+
+function setMediaStatus(message) {
+  const el = document.getElementById("media-status");
+  if (el) el.textContent = message;
+}
+
+function clientLabel(id) {
+  const client = PK3_CLIENTS.find((c) => c.id === id);
+  if (!client) return id;
+  return mods.find((m) => m.name === client.name)?.displayName ?? client.label;
+}
+
+// A screenshot in a base/ folder several clients share could have come from
+// any of them - there's no telling which, so it's labelled as shared rather
+// than pinned on one.
+function mediaClientsLabel(item) {
+  return item.clients.length > 1 ? "Shared" : clientLabel(item.clients[0]);
+}
+
+function formatBytes(bytes) {
+  if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`;
+  if (bytes >= 1e6) return `${Math.round(bytes / 1e6)} MB`;
+  if (bytes >= 1e3) return `${Math.round(bytes / 1e3)} KB`;
+  return `${bytes} B`;
+}
+
+function formatMediaDate(unixSeconds) {
+  const date = new Date(unixSeconds * 1000);
+  const now = new Date();
+  const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const daysAgo = Math.round((startOfDay(now) - startOfDay(date)) / 86400000);
+  const time = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  if (daysAgo === 0) return `Today ${time}`;
+  if (daysAgo === 1) return `Yesterday ${time}`;
+  return date.toLocaleDateString([], {
+    month: "short",
+    day: "numeric",
+    ...(date.getFullYear() !== now.getFullYear() ? { year: "numeric" } : {}),
+  });
+}
+
+function revealLabel() {
+  return currentPlatform === "macos" ? "Show in Finder" : "Show in folder";
+}
+
+function trashName() {
+  return currentPlatform === "windows" ? "Recycle Bin" : "Trash";
+}
+
+function filteredMedia() {
+  const term = mediaSearch.trim().toLowerCase();
+  return mediaItems.filter(
+    (m) =>
+      m.kind === mediaKind &&
+      (mediaClient === "all" || m.clients.includes(mediaClient)) &&
+      (!term || m.name.toLowerCase().includes(term))
+  );
+}
+
+// Clients that could play this demo right now: one that wrote into its
+// folder, is installed, and isn't OpenJO (single-player, no demo playback).
+function demoPlayers(item) {
+  return PK3_CLIENTS.filter(
+    (c) => c.id !== "openjo" && item.clients.includes(c.id) && modState[c.name]?.installed
+  );
+}
+
+function screenshotCardHtml(item) {
+  const url = mediaThumbUrls.get(item.path);
+  const preview = url ? `<img src="${url}" alt="">` : url === "" ? `<span class="media-thumb-fallback">No preview</span>` : "";
+  return `
+    <button class="media-thumb ${item.path === mediaSelectedPath ? "selected" : ""}" data-media-select="${escapeHtml(item.path)}">
+      <span class="media-thumb-img">${preview}</span>
+      <span class="media-thumb-name">${escapeHtml(item.name)}</span>
+      <span class="media-thumb-meta">${mediaClient === "all" ? `${escapeHtml(mediaClientsLabel(item))} &middot; ` : ""}${formatMediaDate(item.modified)}</span>
+    </button>`;
+}
+
+function screenshotBarHtml(item) {
+  const path = escapeHtml(item.path);
+  const dims = item.width ? ` &middot; ${item.width}&times;${item.height}` : "";
+  return `
+    <div class="media-selection-bar">
+      <span class="media-selection-info">
+        <span class="media-selection-name">${escapeHtml(item.name)}</span>
+        &middot; ${escapeHtml(item.clients.length > 1 ? `Shared by ${item.clients.map(clientLabel).join(", ")}` : mediaClientsLabel(item))}${dims} &middot; ${formatBytes(item.size)}
+      </span>
+      <button class="change-folder" data-media-view="${path}">View</button>
+      <button class="change-folder" data-media-copy="${path}">Copy</button>
+      <button class="change-folder" data-media-reveal="${path}">${revealLabel()}</button>
+      <button class="media-trash-btn" data-media-trash="${path}">Move to ${trashName()}</button>
+    </div>`;
+}
+
+function demoRowHtml(item) {
+  const path = escapeHtml(item.path);
+  const protocol = item.name.toLowerCase().endsWith(".dm_16") ? "1.04" : "1.02";
+  const stem = item.name.replace(/\.dm_1[56]$/i, "");
+  const players = demoPlayers(item);
+  let watch;
+  if (!players.length) {
+    watch = `<span class="media-demo-note">No installed client can play this</span>`;
+  } else if (players.length === 1) {
+    watch = `<button class="media-watch-btn" data-media-watch="${path}" data-client="${players[0].id}">Watch</button>`;
+  } else {
+    watch = `
+      <select class="server-client-select media-watch-client">
+        ${players.map((c) => `<option value="${c.id}">${escapeHtml(clientLabel(c.id))}</option>`).join("")}
+      </select>
+      <button class="media-watch-btn" data-media-watch="${path}">Watch</button>`;
+  }
+  return `
+    <div class="media-demo-row">
+      <div class="media-demo-info">
+        <p class="media-demo-name">${escapeHtml(stem)} <span class="media-demo-tag">${protocol}</span></p>
+        <p class="media-demo-meta">${mediaClient === "all" ? `${escapeHtml(mediaClientsLabel(item))} &middot; ` : ""}${formatMediaDate(item.modified)} &middot; ${formatBytes(item.size)}</p>
+      </div>
+      <div class="media-demo-actions">
+        ${watch}
+        <button class="change-folder" data-media-rename="${path}">Rename</button>
+        <button class="change-folder" data-media-reveal="${path}">${revealLabel()}</button>
+        <button class="media-trash-btn" data-media-trash="${path}">Move to ${trashName()}</button>
+      </div>
+    </div>`;
+}
+
+// On the Demos tab, under Refresh - whether or not there are any demos yet.
+const DEMO_CUT_REQUESTS_URL = "https://archive.org/details/democuts";
+const demoCutRequestsHtml = `<a class="profile-link media-democuts-link" href="${DEMO_CUT_REQUESTS_URL}" target="_blank" rel="noopener">Demo Cut Requests &#8599;</a>`;
+
+function renderMediaResults() {
+  const items = filteredMedia();
+  if (!items.length) {
+    if (mediaSearch.trim()) return `<p class="detail-status">Nothing matches "${escapeHtml(mediaSearch)}".</p>`;
+    return mediaKind === "screenshot"
+      ? `<p class="detail-status">No screenshots yet. Take one in game with <code>/screenshotJPEG</code>, or bind it to a key.</p>`
+      : `<p class="detail-status">No demos yet. Start recording in game with <code>/record</code> and stop with <code>/stoprecord</code>.</p>`;
+  }
+
+  const totalPages = Math.ceil(items.length / MEDIA_PAGE_SIZE);
+  mediaPage = Math.min(mediaPage, totalPages - 1);
+  const shown = items.slice(mediaPage * MEDIA_PAGE_SIZE, (mediaPage + 1) * MEDIA_PAGE_SIZE);
+  const pagerHtml =
+    totalPages > 1
+      ? `<div class="monolith-pager">
+           <button id="media-prev-page" ${mediaPage === 0 ? "disabled" : ""}>&larr; Prev</button>
+           <span class="monolith-pager-label">Page ${mediaPage + 1} of ${totalPages} &middot; ${items.length} files</span>
+           <button id="media-next-page" ${mediaPage >= totalPages - 1 ? "disabled" : ""}>Next &rarr;</button>
+         </div>`
+      : "";
+
+  if (mediaKind === "demo") {
+    return `<div class="media-demo-list">${shown.map(demoRowHtml).join("")}</div>${pagerHtml}`;
+  }
+  const selectedItem = items.find((m) => m.path === mediaSelectedPath);
+  return `
+    <div class="media-grid">${shown.map(screenshotCardHtml).join("")}</div>
+    ${pagerHtml}
+    ${selectedItem ? screenshotBarHtml(selectedItem) : ""}`;
+}
+
+function refreshMediaResults() {
+  const resultsEl = document.getElementById("media-results");
+  if (!resultsEl) return;
+  resultsEl.innerHTML = renderMediaResults();
+  loadVisibleThumbs();
+}
+
+function renderMediaView(mainEl) {
+  if (mediaError) {
+    mainEl.innerHTML = `<div class="detail-header"><h2>Media</h2></div><p class="detail-status">Couldn't load media: ${escapeHtml(mediaError)}</p>`;
+    return;
+  }
+  if (mediaItems === null) {
+    mainEl.innerHTML = `<div class="detail-header"><h2>Media</h2></div><p class="detail-status">Looking for screenshots and demos...</p>`;
+    loadMedia();
+    return;
+  }
+
+  // Only clients that actually have something of this kind are worth a
+  // filter - OpenJO, for one, never has demos.
+  const clientIds = PK3_CLIENTS.map((c) => c.id).filter((id) =>
+    mediaItems.some((m) => m.kind === mediaKind && m.clients.includes(id))
+  );
+  if (!clientIds.includes(mediaClient)) mediaClient = "all";
+  const inClient = (m) => mediaClient === "all" || m.clients.includes(mediaClient);
+  const count = (kind) => mediaItems.filter((m) => m.kind === kind && inClient(m)).length;
+  const totalBytes = mediaItems.reduce((sum, m) => sum + m.size, 0);
+
+  const chipsHtml =
+    clientIds.length > 1
+      ? `<div class="media-chips">
+           ${["all", ...clientIds]
+             .map((id) => `<button class="media-chip ${id === mediaClient ? "active" : ""}" data-media-client="${id}">${id === "all" ? "All clients" : escapeHtml(clientLabel(id))}</button>`)
+             .join("")}
+         </div>`
+      : "";
+
+  mainEl.innerHTML = `
+    <div class="detail-header">
+      <h2>Media</h2>
+      ${mediaItems.length ? `<span class="detail-version">${formatBytes(totalBytes)} on disk</span>` : ""}
+    </div>
+    <p class="detail-description">Screenshots and demos from every client, wherever each one saved them.</p>
+    <div class="media-toolbar">
+      <div class="media-tabs">
+        <button class="media-tab ${mediaKind === "screenshot" ? "active" : ""}" data-media-kind="screenshot">Screenshots <span class="media-tab-count">${count("screenshot")}</span></button>
+        <button class="media-tab ${mediaKind === "demo" ? "active" : ""}" data-media-kind="demo">Demos <span class="media-tab-count">${count("demo")}</span></button>
+      </div>
+      <input type="text" id="media-search" class="monolith-search-input media-search" placeholder="Search by name..." value="${escapeHtml(mediaSearch)}">
+      <button class="change-folder" id="media-refresh-btn">Refresh</button>
+      ${chipsHtml}
+      ${mediaKind === "demo" ? demoCutRequestsHtml : ""}
+    </div>
+    <p class="detail-status" id="media-status"></p>
+    <div id="media-results">${renderMediaResults()}</div>
+  `;
+  loadVisibleThumbs();
+}
+
+// A few at a time - the first time a screenshot is seen, its thumbnail means
+// decoding the full-size image.
+async function loadVisibleThumbs() {
+  const { invoke } = window.__TAURI__.core;
+  const pending = [...document.querySelectorAll(".media-thumb[data-media-select]")]
+    .map((el) => el.dataset.mediaSelect)
+    .filter((path) => !mediaThumbUrls.has(path) && !mediaThumbsLoading.has(path));
+  const worker = async () => {
+    while (pending.length) {
+      const path = pending.shift();
+      mediaThumbsLoading.add(path);
+      try {
+        const bytes = await invoke("media_thumbnail", { path });
+        mediaThumbUrls.set(path, URL.createObjectURL(new Blob([bytes], { type: "image/jpeg" })));
+      } catch {
+        mediaThumbUrls.set(path, "");
+      }
+      mediaThumbsLoading.delete(path);
+      const url = mediaThumbUrls.get(path);
+      for (const el of document.querySelectorAll(".media-thumb[data-media-select]")) {
+        if (el.dataset.mediaSelect !== path) continue;
+        el.querySelector(".media-thumb-img").innerHTML = url
+          ? `<img src="${url}" alt="">`
+          : `<span class="media-thumb-fallback">No preview</span>`;
+      }
+    }
+  };
+  await Promise.all([worker(), worker(), worker()]);
+}
+
+function openMediaViewer(path) {
+  const { invoke } = window.__TAURI__.core;
+  const items = filteredMedia();
+  let index = items.findIndex((m) => m.path === path);
+  if (index < 0) return;
+
+  const overlay = document.createElement("div");
+  overlay.className = "confirm-overlay media-viewer";
+  overlay.innerHTML = `
+    ${items.length > 1 ? `<button class="media-viewer-nav" data-step="-1" aria-label="Previous">&larr;</button>` : ""}
+    <figure class="media-viewer-figure">
+      <img class="media-viewer-img" alt="">
+      <figcaption class="media-viewer-caption"></figcaption>
+    </figure>
+    ${items.length > 1 ? `<button class="media-viewer-nav" data-step="1" aria-label="Next">&rarr;</button>` : ""}`;
+  document.body.appendChild(overlay);
+  const img = overlay.querySelector(".media-viewer-img");
+  const caption = overlay.querySelector(".media-viewer-caption");
+  let currentUrl = null;
+
+  async function show(i) {
+    index = (i + items.length) % items.length;
+    const item = items[index];
+    mediaSelectedPath = item.path;
+    caption.textContent = `${item.name} · ${mediaClientsLabel(item)} · ${formatMediaDate(item.modified)}`;
+    try {
+      const bytes = await invoke("media_image", { path: item.path });
+      if (items[index] !== item) return; // moved on while this was loading
+      if (currentUrl) URL.revokeObjectURL(currentUrl);
+      currentUrl = URL.createObjectURL(new Blob([bytes]));
+      img.src = currentUrl;
+    } catch (err) {
+      caption.textContent += ` · Couldn't open: ${err}`;
+    }
+  }
+
+  function close() {
+    document.removeEventListener("keydown", onKey);
+    overlay.remove();
+    if (currentUrl) URL.revokeObjectURL(currentUrl);
+    refreshMediaResults();
+  }
+
+  function onKey(e) {
+    if (e.key === "Escape") close();
+    else if (e.key === "ArrowLeft" && items.length > 1) show(index - 1);
+    else if (e.key === "ArrowRight" && items.length > 1) show(index + 1);
+  }
+
+  document.addEventListener("keydown", onKey);
+  overlay.addEventListener("click", (e) => {
+    const nav = e.target.closest(".media-viewer-nav");
+    if (nav) show(index + Number(nav.dataset.step));
+    else if (e.target === overlay) close();
+  });
+  show(index);
+}
+
+async function bytesToPngBlob(bytes) {
+  const bitmap = await createImageBitmap(new Blob([bytes]));
+  const canvas = document.createElement("canvas");
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  canvas.getContext("2d").drawImage(bitmap, 0, 0);
+  return new Promise((resolve, reject) =>
+    canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("couldn't encode image"))), "image/png")
+  );
+}
+
+// Clipboards take PNG, not JPEG, and WebKit only allows the write while the
+// click is still being handled - so the ClipboardItem is handed a promise
+// straight away rather than waiting for the image to load first.
+async function copyScreenshot(path) {
+  const { invoke } = window.__TAURI__.core;
+  const png = invoke("media_image", { path }).then(bytesToPngBlob);
+  try {
+    await navigator.clipboard.write([new ClipboardItem({ "image/png": png })]);
+    setMediaStatus("Copied to clipboard");
+  } catch (err) {
+    setMediaStatus(`Couldn't copy: ${err}`);
+  }
+}
+
+async function revealMedia(path) {
+  try {
+    const { invoke } = window.__TAURI__.core;
+    await invoke("reveal_media", { path });
+  } catch (err) {
+    setMediaStatus(`Error: ${err}`);
+  }
+}
+
+async function trashMedia(path) {
+  const item = mediaItems.find((m) => m.path === path);
+  if (!item) return;
+  const confirmed = await showConfirmDialog({
+    title: `Move to ${trashName()}?`,
+    message: `${escapeHtml(item.name)} will be moved to the ${trashName()}. You can restore it from there.`,
+    confirmLabel: `Move to ${trashName()}`,
+    danger: true,
+  });
+  if (!confirmed) return;
+  try {
+    const { invoke } = window.__TAURI__.core;
+    await invoke("trash_media", { path });
+    mediaItems = mediaItems.filter((m) => m.path !== path);
+    const url = mediaThumbUrls.get(path);
+    if (url) URL.revokeObjectURL(url);
+    mediaThumbUrls.delete(path);
+    if (mediaSelectedPath === path) mediaSelectedPath = null;
+    renderMainPreservingScroll();
+  } catch (err) {
+    setMediaStatus(`Error: ${err}`);
+  }
+}
+
+async function renameDemo(path) {
+  const item = mediaItems.find((m) => m.path === path);
+  if (!item) return;
+  const { invoke } = window.__TAURI__.core;
+  const stem = item.name.replace(/\.dm_1[56]$/i, "");
+  // A name that's taken or has a space in it is worth fixing in place - the
+  // dialog stays open with the error when `submit` throws.
+  const newPath = await showTextDialog({
+    title: "Rename demo",
+    label: "Name",
+    value: stem,
+    confirmLabel: "Rename",
+    submit: (newName) => invoke("rename_demo", { path, newName }),
+  });
+  if (!newPath) return;
+  item.path = newPath;
+  item.name = newPath.split(/[\\/]/).pop();
+  renderMainPreservingScroll();
+}
+
+async function watchDemo(path, clientId) {
+  const item = mediaItems.find((m) => m.path === path);
+  try {
+    const { invoke } = window.__TAURI__.core;
+    await invoke("play_demo", { clientId, path });
+    setMediaStatus(`Opening ${item?.name ?? "demo"} in ${clientLabel(clientId)}...`);
+  } catch (err) {
+    setMediaStatus(`Error: ${err}`);
+  }
+}
+
+// Returns true when the click belonged to the Media view.
+function handleMediaClick(e) {
+  const kindBtn = e.target.closest("[data-media-kind]");
+  if (kindBtn) {
+    mediaKind = kindBtn.dataset.mediaKind;
+    mediaPage = 0;
+    mediaSelectedPath = null;
+    renderMainPreservingScroll();
+    return true;
+  }
+  const clientBtn = e.target.closest("[data-media-client]");
+  if (clientBtn) {
+    mediaClient = clientBtn.dataset.mediaClient;
+    mediaPage = 0;
+    renderMainPreservingScroll();
+    return true;
+  }
+  const thumb = e.target.closest("[data-media-select]");
+  if (thumb) {
+    const path = thumb.dataset.mediaSelect;
+    mediaSelectedPath = mediaSelectedPath === path ? null : path;
+    refreshMediaResults();
+    return true;
+  }
+  const viewBtn = e.target.closest("[data-media-view]");
+  if (viewBtn) {
+    openMediaViewer(viewBtn.dataset.mediaView);
+    return true;
+  }
+  const copyBtn = e.target.closest("[data-media-copy]");
+  if (copyBtn) {
+    copyScreenshot(copyBtn.dataset.mediaCopy);
+    return true;
+  }
+  const revealBtn = e.target.closest("[data-media-reveal]");
+  if (revealBtn) {
+    revealMedia(revealBtn.dataset.mediaReveal);
+    return true;
+  }
+  const trashBtn = e.target.closest("[data-media-trash]");
+  if (trashBtn) {
+    trashMedia(trashBtn.dataset.mediaTrash);
+    return true;
+  }
+  const renameBtn = e.target.closest("[data-media-rename]");
+  if (renameBtn) {
+    renameDemo(renameBtn.dataset.mediaRename);
+    return true;
+  }
+  const watchBtn = e.target.closest("[data-media-watch]");
+  if (watchBtn) {
+    const clientId = watchBtn.dataset.client ?? watchBtn.closest(".media-demo-actions").querySelector(".media-watch-client").value;
+    watchDemo(watchBtn.dataset.mediaWatch, clientId);
+    return true;
+  }
+  if (e.target.closest("#media-refresh-btn")) {
+    refreshMedia();
+    renderMainPreservingScroll();
+    return true;
+  }
+  if (e.target.closest("#media-prev-page")) {
+    mediaPage = Math.max(0, mediaPage - 1);
+    refreshMediaResults();
+    return true;
+  }
+  if (e.target.closest("#media-next-page")) {
+    mediaPage += 1;
+    refreshMediaResults();
+    return true;
+  }
+  return false;
+}
+
 function kdRatio(kills, deaths) {
   return deaths > 0 ? (kills / deaths).toFixed(2) : (kills > 0 ? kills.toFixed(2) : "0.00");
 }
@@ -1393,7 +2326,7 @@ function formatFlagHold(ms) {
 }
 
 function statTile(value, label) {
-  return `<div class="stat-tile"><span class="stat-tile-value">${value}</span><span class="stat-tile-label">${label}</span></div>`;
+  return `<div class="stat-tile"><span class="stat-tile-value">${escapeHtml(value)}</span><span class="stat-tile-label">${label}</span></div>`;
 }
 
 function renderStatsBlock(mod) {
@@ -1403,10 +2336,10 @@ function renderStatsBlock(mod) {
     return `<p class="stats-month-label">Loading your stats...</p>`;
   }
   if (cached === null) {
-    return `<p class="detail-status">No JK2CTF profile found for "${session.name}". <a class="detail-source-link" href="${mod.profileUrl}" target="_blank" rel="noopener">Check on the site ↗</a></p>`;
+    return `<p class="detail-status">No JK2CTF profile found for "${escapeHtml(session.name)}". <a class="detail-source-link" href="${safeHttpUrl(mod.profileUrl)}" target="_blank" rel="noopener">Check on the site ↗</a></p>`;
   }
   if (cached.error) {
-    return `<p class="detail-status">Couldn't load stats: ${cached.error}</p>`;
+    return `<p class="detail-status">Couldn't load stats: ${escapeHtml(cached.error)}</p>`;
   }
 
   const { currentMonth } = cached;
@@ -1426,13 +2359,12 @@ function renderStatsBlock(mod) {
     : `<p class="detail-status">No scoreboard stats recorded this month.</p>`;
 
   return `
-    <p class="stats-month-label">${currentMonth.label}</p>
+    <p class="stats-month-label">${escapeHtml(currentMonth.label)}</p>
     <p class="stats-record">
-      <span class="win">${currentMonth.wins}W</span> &ndash; <span class="loss">${currentMonth.losses}L</span>
-      ${currentMonth.winRate != null ? ` &middot; ${currentMonth.winRate}% win rate` : ""}
+      <span class="win">${escapeHtml(currentMonth.wins)}W</span> &ndash; <span class="loss">${escapeHtml(currentMonth.losses)}L</span>
+      ${currentMonth.winRate != null ? ` &middot; ${escapeHtml(currentMonth.winRate)}% win rate` : ""}
     </p>
     ${monthTiles}
-    <a class="detail-source-link" href="${SORACLE_BASE}/player/${playerSlug(session.name)}" target="_blank" rel="noopener">View full profile ↗</a>
   `;
 }
 
@@ -1449,7 +2381,7 @@ async function loadStats(mod, name) {
   } catch (err) {
     statsCache[name] = { error: String(err) };
   }
-  if (selected === mod.name) renderMain();
+  if (selected === mod.name || selected === "__ctf__") scheduleMainRender();
 }
 
 const releaseCache = {}; // "owner/repo" -> release data, null (no releases), or { error }
@@ -1465,8 +2397,23 @@ function githubRepoFromUrl(url) {
   }
 }
 
+// Anything that didn't originate in this file - server replies, the
+// manifest, catalogs, feeds, filenames, error text - goes through here
+// before it's put into HTML. Takes anything, since numbers and missing
+// fields turn up too.
 function escapeHtml(s) {
-  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+// For href/src that come from outside: anything but a plain http(s) URL
+// (a javascript: link, say) becomes an empty string.
+function safeHttpUrl(url) {
+  return /^https?:\/\/\S+$/i.test(url ?? "") ? escapeHtml(url) : "";
+}
+
+// Server text: JK2 colour codes stripped, then escaped like everything else.
+function serverText(s) {
+  return escapeHtml(stripQuakeColors(s));
 }
 
 // A few common markdown bits (bold, bullets, line breaks) - GitHub release
@@ -1504,13 +2451,13 @@ function renderReleaseNotesBlock(mod, repo) {
   }
   if (cached === null) return "";
   if (cached.error) {
-    return `<p class="stats-month-label">Latest Release</p><p class="detail-status">Couldn't load release notes: ${cached.error}</p>`;
+    return `<p class="stats-month-label">Latest Release</p><p class="detail-status">Couldn't load release notes: ${escapeHtml(cached.error)}</p>`;
   }
   const body = renderReleaseBody(cached.body);
   return `
-    <p class="stats-month-label">Latest Release &mdash; ${cached.tag_name ?? ""}</p>
+    <p class="stats-month-label">Latest Release &mdash; ${escapeHtml(cached.tag_name ?? "")}</p>
     <div class="release-notes">${body || "<em>No release notes provided.</em>"}</div>
-    <a class="detail-source-link" href="${cached.html_url}" target="_blank" rel="noopener">View on GitHub ↗</a>
+    <a class="detail-source-link" href="${safeHttpUrl(cached.html_url)}" target="_blank" rel="noopener">View on GitHub ↗</a>
   `;
 }
 
@@ -1524,8 +2471,20 @@ function renderMain() {
     renderFaqView(mainEl);
     return;
   }
+  if (selected === "__ctf__") {
+    renderCtfView(mainEl);
+    return;
+  }
   if (selected === "__mods__") {
     renderModsView(mainEl);
+    return;
+  }
+  if (selected === "__media__") {
+    renderMediaView(mainEl);
+    return;
+  }
+  if (selected === "__config__") {
+    renderConfigView(mainEl);
     return;
   }
   if (selected === "__servers__") {
@@ -1559,19 +2518,14 @@ function renderMain() {
         loadFolderSuggestion(mod.name);
       } else if (suggestion) {
         actions += `<span class="folder-suggestion">
-          Already installed in <span class="folder-suggestion-path" title="${suggestion}">${suggestion}</span>
-          <button class="change-folder" data-use-suggested-folder="${mod.name}" data-suggested-path="${suggestion}">Use that folder</button>
+          Already installed in <span class="folder-suggestion-path" title="${escapeHtml(suggestion)}">${escapeHtml(suggestion)}</span>
+          <button class="change-folder" data-use-suggested-folder="${escapeHtml(mod.name)}" data-suggested-path="${escapeHtml(suggestion)}">Use that folder</button>
         </span>`;
       }
     }
   }
-  let statsHtml = "";
   if (mod.profileUrl) {
-    if (session) {
-      statsHtml = renderStatsBlock(mod);
-    } else {
-      actions += `<a class="profile-link" href="${SORACLE_BASE}" target="_blank" rel="noopener">JK2 CTF</a>`;
-    }
+    actions += `<a class="profile-link" href="${SORACLE_BASE}" target="_blank" rel="noopener">JK2 CTF</a>`;
   }
   // Which copy of the game this client will actually touch. Only shown for
   // clients this platform can install at all - there's nothing to point at
@@ -1587,14 +2541,14 @@ function renderMain() {
       folderHtml = `
         <p class="client-folder-row">
           <span class="client-folder-label">Game folder</span>
-          <span class="client-folder-path" title="${shown}">${shown}</span>
+          <span class="client-folder-path" title="${escapeHtml(shown)}">${escapeHtml(shown)}</span>
           <span class="client-folder-tag">${folder.is_own ? "this client only" : "shared default"}</span>
-          <button class="change-folder" data-pick-client-folder="${mod.name}">Change...</button>
-          ${folder.is_own ? `<button class="change-folder" data-clear-client-folder="${mod.name}">Use default</button>` : ""}
+          <button class="change-folder" data-pick-client-folder="${escapeHtml(mod.name)}">Change...</button>
+          ${folder.is_own ? `<button class="change-folder" data-clear-client-folder="${escapeHtml(mod.name)}">Use default</button>` : ""}
         </p>`;
     }
   }
-  const banner = `<img class="detail-banner" src="assets/banners/${mod.name.toLowerCase()}.jpg" alt="" onerror="this.remove()">`;
+  const banner = `<img class="detail-banner" src="assets/banners/${encodeURIComponent(mod.name.toLowerCase())}.jpg" alt="" data-on-error="remove">`;
   const repo = githubRepoFromUrl(mod.sourceUrl);
   const releaseHtml = repo ? renderReleaseNotesBlock(mod, repo) : "";
   // "View on GitHub ↗" (in releaseHtml) already covers the source link for
@@ -1602,16 +2556,15 @@ function renderMain() {
   // isn't (e.g. NWH's sourceUrl is Flate's own server, not a repo) - and
   // bottom-left, not up top competing with the masthead emblem for space.
   const sourceHtml = !repo && mod.sourceUrl
-    ? `<p class="detail-source-standalone"><a class="detail-source-link" href="${mod.sourceUrl}" target="_blank" rel="noopener">Source ↗</a></p>`
+    ? `<p class="detail-source-standalone"><a class="detail-source-link" href="${safeHttpUrl(mod.sourceUrl)}" target="_blank" rel="noopener">Source ↗</a></p>`
     : "";
   mainEl.innerHTML = `
     ${banner}
-    <div class="detail-header"><h2>${mod.displayName ?? mod.name}</h2><span class="detail-version">${mod.version}</span></div>
-    <p class="detail-description">${mod.description ?? ""}</p>
+    <div class="detail-header"><h2>${escapeHtml(mod.displayName ?? mod.name)}</h2><span class="detail-version">${escapeHtml(mod.version)}</span></div>
+    <p class="detail-description">${escapeHtml(mod.description ?? "")}</p>
     <div class="detail-actions">${actions}</div>
     <p class="detail-status">${escapeHtml(state.message ?? "")}</p>
     ${folderHtml}
-    ${statsHtml}
     ${releaseHtml}
     ${sourceHtml}
   `;
@@ -1624,7 +2577,7 @@ async function handleAction(name, action) {
   if (action === "uninstall") {
     const confirmed = await showConfirmDialog({
       title: "Uninstall?",
-      message: `Remove ${mod.displayName ?? mod.name} from your game folder? Your PK3 mods and player data aren't touched.`,
+      message: `Remove ${escapeHtml(mod.displayName ?? mod.name)} from your game folder? Your PK3 mods and player data aren't touched.`,
       confirmLabel: "Uninstall",
       danger: true,
     });
@@ -1679,6 +2632,7 @@ async function handleAction(name, action) {
 
 function selectClient(name) {
   selected = name;
+  if (mods.some((m) => m.name === name) && !clientsGroupOpen) setClientsGroupOpen(true);
   renderSidebar();
   renderMain();
 }
@@ -1690,10 +2644,12 @@ async function checkGameFolder() {
   try {
     await invoke("locate_jk2");
     dot.classList.remove("missing");
+    dot.parentElement.classList.remove("missing");
     const override = await invoke("get_game_folder_override");
     desc.textContent = override ? "Custom folder" : "Steam install";
   } catch (err) {
     dot.classList.add("missing");
+    dot.parentElement.classList.add("missing");
     desc.innerHTML = `Not found — <a href="${STEAM_STORE_URL}" target="_blank" rel="noopener">buy on Steam</a>`;
     console.error("Game folder not found:", err);
   }
@@ -1775,16 +2731,12 @@ async function init() {
   } catch (err) {
     console.error("Failed to detect platform, defaulting to macos:", err);
   }
-  // NWH only belongs in the joinable pool on Linux, where it's actually
-  // installable at all (MOD_HANDLERS.NWH.platforms) - added here rather
-  // than listed in JOINABLE_CLIENTS itself since that constant is declared
-  // before currentPlatform is known.
-  if (currentPlatform === "linux") JOINABLE_CLIENTS.push("NWH");
   session = await loadSession();
   renderSidebar();
   renderMain();
 
   if (!(await loadManifest())) return;
+  renderSidebar(); // names up straight away; install checks fill in the dots
   await refreshModStates();
   checkForUpdates(true);
 }
@@ -1803,7 +2755,7 @@ async function loadManifest() {
   } catch (err) {
     clientListEl.innerHTML = `
       <p class="sidebar-loading">Couldn't reach the manifest - check your connection.</p>
-      <p class="sidebar-loading">${err}</p>
+      <p class="sidebar-loading">${escapeHtml(err)}</p>
       <button id="retry-manifest-btn" class="change-folder">Retry</button>`;
     console.error("Manifest fetch failed:", err);
     return false;
@@ -1819,7 +2771,17 @@ async function retryManifestLoad() {
 }
 
 document.getElementById("home-nav-row").addEventListener("click", () => selectClient("__home__"));
+document.getElementById("ctf-nav-row").addEventListener("click", () => selectClient("__ctf__"));
 document.getElementById("mods-nav-row").addEventListener("click", () => selectClient("__mods__"));
+document.getElementById("config-nav-row").addEventListener("click", () => {
+  configView = null; // fresh look at the configs each visit
+  configError = null;
+  selectClient("__config__");
+});
+document.getElementById("media-nav-row").addEventListener("click", () => {
+  refreshMedia();
+  selectClient("__media__");
+});
 document.getElementById("servers-nav-row").addEventListener("click", () => selectClient("__servers__"));
 document.getElementById("faq-nav-row").addEventListener("click", () => selectClient("__faq__"));
 document.getElementById("sign-out-nav-row").addEventListener("click", () => {
@@ -1828,6 +2790,8 @@ document.getElementById("sign-out-nav-row").addEventListener("click", () => {
   renderSidebar();
   renderMain();
 });
+
+document.getElementById("clients-group-row").addEventListener("click", () => setClientsGroupOpen(!clientsGroupOpen));
 
 document.getElementById("client-list").addEventListener("click", (e) => {
   if (e.target.closest("#retry-manifest-btn")) {
@@ -1844,6 +2808,8 @@ document.getElementById("main").addEventListener("click", (e) => {
     handleAction(selected, btn.dataset.action);
     return;
   }
+  if (handleMediaClick(e)) return;
+  if (handleConfigClick(e)) return;
   const useSuggestedBtn = e.target.closest("button[data-use-suggested-folder]");
   if (useSuggestedBtn) {
     useSuggestedFolder(useSuggestedBtn.dataset.useSuggestedFolder, useSuggestedBtn.dataset.suggestedPath);
@@ -1859,14 +2825,19 @@ document.getElementById("main").addEventListener("click", (e) => {
     resetClientFolder(clearFolderBtn.dataset.clearClientFolder);
     return;
   }
-  const pinnedPlayBtn = e.target.closest("[data-pinned-play]");
-  if (pinnedPlayBtn && !pinnedPlayBtn.disabled) {
-    playPinnedAction(pinnedPlayBtn.dataset.pinnedPlay);
+  const modePlayBtn = e.target.closest("[data-mode-play]");
+  if (modePlayBtn) {
+    playMode(modePlayBtn.dataset.modePlay);
     return;
   }
-  const pinnedEditBtn = e.target.closest("[data-pinned-edit]");
-  if (pinnedEditBtn) {
-    openPinnedActionEditor(pinnedEditBtn.dataset.pinnedEdit);
+  const modeServerBtn = e.target.closest("[data-mode-server]");
+  if (modeServerBtn) {
+    chooseModeServer(modeServerBtn.dataset.modeServer);
+    return;
+  }
+  const modeInstallBtn = e.target.closest("[data-mode-install]");
+  if (modeInstallBtn) {
+    selectClient(modeInstallBtn.dataset.modeInstall);
     return;
   }
   if (e.target.closest("#back-to-home-link")) {
@@ -1962,7 +2933,35 @@ document.getElementById("main").addEventListener("click", (e) => {
   }
 });
 
+// Images that should vanish when their file is missing (a client without a
+// banner, a catalog preview that 404s). Error events don't bubble, so this
+// listens in the capture phase instead of an inline onerror attribute.
+document.addEventListener(
+  "error",
+  (e) => {
+    const action = e.target?.dataset?.onError;
+    if (action === "remove") e.target.remove();
+    else if (action === "hide") e.target.style.visibility = "hidden";
+  },
+  true
+);
+
+document.getElementById("main").addEventListener("dblclick", (e) => {
+  const thumb = e.target.closest("[data-media-select]");
+  if (thumb) openMediaViewer(thumb.dataset.mediaSelect);
+});
+
 document.getElementById("main").addEventListener("change", (e) => {
+  const chip = e.target.closest("input[data-preset-client]");
+  if (chip) {
+    togglePresetClient(chip.dataset.presetClient, chip.dataset.target, chip.checked);
+    return;
+  }
+  const scope = e.target.closest("input[data-preset-controls-only]");
+  if (scope) {
+    configAction("set_preset_controls_only", { id: scope.dataset.presetControlsOnly, controlsOnly: scope.checked });
+    return;
+  }
   const cb = e.target.closest('input[type="checkbox"][data-target]');
   if (cb) togglePk3Target(cb.dataset.filename, cb.dataset.target, cb.checked);
 });
@@ -1978,6 +2977,13 @@ document.getElementById("main").addEventListener("input", (e) => {
     monolithPage = 0;
     const resultsEl = document.getElementById("monolith-results");
     if (resultsEl) resultsEl.innerHTML = renderMonolithResults();
+    return;
+  }
+  const mediaSearchEl = e.target.closest("#media-search");
+  if (mediaSearchEl) {
+    mediaSearch = mediaSearchEl.value;
+    mediaPage = 0;
+    refreshMediaResults();
     return;
   }
   const installedSearchEl = e.target.closest("#installed-mods-search");
@@ -2042,7 +3048,7 @@ document.getElementById("change-folder-btn").addEventListener("click", async () 
   }
   document.getElementById("main").insertAdjacentHTML(
     "afterbegin",
-    `<p class="detail-status" style="margin-bottom: 1rem;">${message}</p>`
+    `<p class="detail-status" style="margin-bottom: 1rem;">${escapeHtml(message)}</p>`
   );
 });
 

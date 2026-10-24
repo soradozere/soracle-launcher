@@ -39,7 +39,14 @@ function initStars() {
   }));
 }
 
+// Draws only while the window is actually on screen - behind a running game
+// or minimised, there's nobody to twinkle for.
+let animating = false;
 function animate(time) {
+  if (document.hidden) {
+    animating = false;
+    return;
+  }
   requestAnimationFrame(animate);
   const w = window.innerWidth;
   const h = window.innerHeight;
@@ -65,6 +72,13 @@ function animate(time) {
   ctx.shadowBlur = 0;
 }
 
+function startAnimating() {
+  if (animating || document.hidden) return;
+  animating = true;
+  requestAnimationFrame(animate);
+}
+
 window.addEventListener("resize", resize);
+document.addEventListener("visibilitychange", startAnimating);
 resize();
-requestAnimationFrame(animate);
+startAnimating();

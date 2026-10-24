@@ -11,6 +11,9 @@ importers:
       '@tauri-apps/cli':
         specifier: ^2
         version: 2.11.4
+      three:
+        specifier: 0.160.1
+        version: 0.160.1
 
 packages:
 
@@ -90,6 +93,9 @@ packages:
     engines: {node: '>= 10'}
     hasBin: true
 
+  three@0.160.1:
+    resolution: {integrity: sha512-Bgl2wPJypDOZ1stAxwfWAcJ0WQf7QzlptsxkjYiURPz+n5k4RBDLsq+6f9Y75TYxn6aHLcWz+JNmwTOXWrQTBQ==}
+
 snapshots:
 
   '@tauri-apps/cli-darwin-arm64@2.11.4':
@@ -138,3 +144,5 @@ snapshots:
       '@tauri-apps/cli-win32-arm64-msvc': 2.11.4
       '@tauri-apps/cli-win32-ia32-msvc': 2.11.4
       '@tauri-apps/cli-win32-x64-msvc': 2.11.4
+
+  three@0.160.1: {}

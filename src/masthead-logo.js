@@ -1,6 +1,6 @@
-import * as THREE from "three";
-import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
-import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
+import * as THREE from "./vendor/three/three.module.js";
+import { GLTFLoader } from "./vendor/three/addons/loaders/GLTFLoader.js";
+import { RoomEnvironment } from "./vendor/three/addons/environments/RoomEnvironment.js";
 
 // The rotating JK2 emblem with a lightsaber blade running behind it, ported
 // from Soracle's masthead-logo-3d.tsx (React Three Fiber) to plain Three.js,
@@ -173,15 +173,31 @@ async function init() {
   scene.add(group);
 
   // --- animate: spin, plus the blade's live-flame width jitter ---
+  // Stops while the window is hidden (behind a running game, minimised) -
+  // a spinning emblem nobody can see is pure GPU time. The delta is capped
+  // so coming back doesn't whip the emblem round by however long it was
+  // away.
   const clock = new THREE.Clock();
+  let animating = false;
   function animate() {
+    if (document.hidden) {
+      animating = false;
+      return;
+    }
     requestAnimationFrame(animate);
-    const delta = clock.getDelta();
+    const delta = Math.min(clock.getDelta(), 0.1);
     group.rotation.y += delta * 0.7;
     blade.scale.x = 1 + (Math.random() - 0.5) * 0.06;
     renderer.render(scene, camera);
   }
-  animate();
+  function startAnimating() {
+    if (animating || document.hidden) return;
+    animating = true;
+    clock.getDelta();
+    animate();
+  }
+  document.addEventListener("visibilitychange", startAnimating);
+  startAnimating();
 }
 
 init();

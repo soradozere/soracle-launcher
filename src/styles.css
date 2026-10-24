@@ -1,3 +1,20 @@
+/* Trajan for headers, always set in capitals. Ergoe is JK2's own menu font,
+   traced from the game's ergoec texture atlas into a real outline font so it
+   scales and selects like any other text. */
+@font-face {
+  font-family: "Trajan";
+  src: url("assets/fonts/trajan-bold.woff2") format("woff2");
+  font-weight: 700;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Ergoe JK2";
+  src: url("assets/fonts/ergoec.woff2") format("woff2");
+  font-weight: 400;
+  font-display: swap;
+}
+
 :root {
   --bg: #0b0c10;
   --titlebar: #101216;
@@ -22,6 +39,9 @@
   --team-red: #ff4757;
   --team-blue: #62d6e8;
   --font-display: "Chakra Petch", "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
+  --masthead-overhang: 46px;
+  --font-heading: "Trajan", "Chakra Petch", Georgia, serif;
+  --font-sidebar: "Ergoe JK2", "Chakra Petch", "Inter", sans-serif;
 
   font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Avenir, Helvetica, Arial, sans-serif;
   font-size: 14px;
@@ -65,7 +85,7 @@ body {
 }
 
 .sidebar {
-  width: 260px;
+  width: 200px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
@@ -73,10 +93,11 @@ body {
   border-right: 1px solid var(--border);
   padding: 1.1rem 0;
   overflow: hidden;
+  font-family: var(--font-sidebar);
 }
 
 .sidebar-section {
-  padding: 0 1.1rem 1.1rem;
+  padding: 0 0.85rem 1.1rem;
 }
 
 .sidebar-section-tight {
@@ -86,7 +107,7 @@ body {
 .home-nav-row {
   display: flex;
   align-items: center;
-  padding: 0.55rem 0.6rem;
+  padding: 0.55rem 0.5rem;
   border-radius: 6px;
   cursor: pointer;
   border: 1px solid transparent;
@@ -138,9 +159,10 @@ body {
 }
 
 .home-nav-label {
-  font-family: var(--font-display);
-  font-size: 0.9rem;
-  font-weight: 500;
+  font-family: var(--font-sidebar);
+  font-size: 1.08rem;
+  font-weight: 400;
+  letter-spacing: 0.02em;
   color: var(--text);
 }
 
@@ -149,16 +171,16 @@ body {
 }
 
 .sidebar-label {
-  font-family: "SF Mono", ui-monospace, Menlo, monospace;
-  font-size: 0.68rem;
-  letter-spacing: 0.08em;
+  font-family: var(--font-sidebar);
+  font-size: 0.82rem;
+  letter-spacing: 0.1em;
   color: var(--text-dim);
   text-transform: uppercase;
   margin: 0 0 0.6rem;
 }
 
 .sidebar-loading {
-  padding: 0 1.1rem;
+  padding: 0 0.85rem;
   font-size: 0.8rem;
   color: var(--text-dim);
 }
@@ -166,15 +188,32 @@ body {
 .game-folder-row {
   display: flex;
   align-items: center;
-  gap: 0.45rem;
-  margin-bottom: 0.7rem;
+  gap: 0.4rem;
+  margin: 0.2rem 0 0.4rem;
+  padding: 0.35rem 0.5rem;
+}
+
+/* Sits in the same right-hand column as the client dots above it. */
+.game-folder-row .status-dot {
+  margin: 0 calc((0.9rem - 7px) / 2) 0 auto;
+}
+
+/* "Not found - buy on Steam" is too long for the row at sidebar width, so
+   it takes a line of its own above Change... rather than being cut off. */
+.game-folder-row.missing {
+  flex-wrap: wrap;
+}
+
+.game-folder-row.missing .game-folder-desc {
+  flex-basis: 100%;
+  white-space: normal;
 }
 
 .game-folder-desc {
   flex: 1;
   min-width: 0;
-  font-size: 0.76rem;
-  font-weight: 500;
+  font-size: 0.88rem;
+  letter-spacing: 0.02em;
   color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -220,28 +259,64 @@ button.change-folder:hover {
   border-color: var(--border-hover);
 }
 
+/* Ergoe runs small for its font-size - keep sidebar buttons legible. */
+.sidebar button.change-folder {
+  font-size: 0.84rem;
+  letter-spacing: 0.02em;
+}
+
 .sidebar-divider {
   height: 1px;
   background: var(--border);
-  margin: 0 1.1rem 1.1rem;
+  margin: 0 0.85rem 1.1rem;
+}
+
+/* Nav plus the Clients group scroll together on a short window, rather than
+   pushing Support / FAQ off the bottom. */
+.sidebar-nav {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.sidebar-spacer {
+  flex: 1;
+}
+
+.clients-group-row {
+  user-select: none;
+}
+
+/* Far right, pointing down when open. Client dots line up beneath it. */
+.clients-group-chevron {
+  margin-left: auto;
+  width: 0.9rem;
+  font-size: 1.1rem;
+  line-height: 1;
+  text-align: center;
+  color: var(--text-dim);
+  transition: transform 0.15s;
+}
+
+.clients-group-row.open .clients-group-chevron {
+  transform: rotate(90deg);
 }
 
 .client-list {
   display: flex;
   flex-direction: column;
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
   gap: 0.15rem;
-  padding: 0 0.6rem;
+  margin-top: 0.15rem;
 }
 
+/* Names start flush with the rest of the sidebar; the status dot sits at
+   the far right, under the Clients arrow. */
 .client-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-  padding: 0.5rem 0.6rem;
+  gap: 0.4rem;
+  padding: 0.5rem 0.5rem;
   border-radius: 6px;
   cursor: pointer;
   border: 1px solid transparent;
@@ -252,8 +327,14 @@ button.change-folder:hover {
 }
 
 .client-row-name {
-  font-family: var(--font-display);
-  font-size: 0.85rem;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-sidebar);
+  font-size: 1rem;
+  letter-spacing: 0.02em;
   color: var(--text);
 }
 
@@ -262,14 +343,36 @@ button.change-folder:hover {
   font-weight: 500;
 }
 
-.client-row-status {
-  font-size: 0.68rem;
-  color: var(--text-dim);
-  font-family: "SF Mono", ui-monospace, Menlo, monospace;
+.client-dot {
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  margin: 0 calc((0.9rem - 7px) / 2);
+  border-radius: 50%;
+  border: 1px solid var(--text-dim);
 }
 
-.client-row.installed .client-row-status {
-  color: var(--primary-dim);
+.client-row.checking .client-dot {
+  border-style: dotted;
+  opacity: 0.6;
+}
+
+.client-row.installed .client-dot {
+  background: var(--success);
+  border-color: var(--success);
+  box-shadow: 0 0 5px rgba(61, 220, 132, 0.55);
+}
+
+.client-row-status {
+  flex-shrink: 0;
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  font-family: var(--font-sidebar);
+  letter-spacing: 0.03em;
+}
+
+.client-row-status--update {
+  color: var(--primary);
 }
 
 .main {
@@ -277,7 +380,9 @@ button.change-folder:hover {
   min-width: 0;
   overflow-y: auto;
   scrollbar-width: none;
-  padding: 2rem 2.5rem;
+  /* The masthead logo reaches --masthead-overhang into this column (see
+     .masthead canvas) - the right padding keeps content out from under it. */
+  padding: 2rem calc(var(--masthead-overhang) + 1.25rem) 2rem 2.5rem;
   background:
     radial-gradient(ellipse 130% 100% at 50% 0%, rgba(80, 170, 230, 0.1) 0%, rgba(30, 60, 90, 0.08) 45%, rgba(12, 22, 34, 0.12) 100%),
     linear-gradient(180deg, rgba(18, 40, 62, 0.14), rgba(8, 14, 22, 0.18));
@@ -315,9 +420,11 @@ button.change-folder:hover {
 }
 
 .detail-header h2 {
-  font-family: var(--font-display);
-  font-size: 1.3rem;
-  font-weight: 600;
+  font-family: var(--font-heading);
+  font-size: 1.2rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
   color: var(--text-bright);
   margin: 0;
 }
@@ -447,8 +554,8 @@ button.change-folder:hover {
   display: block;
   position: absolute;
   top: 0;
-  left: -46px;
-  width: calc(100% + 46px);
+  left: calc(-1 * var(--masthead-overhang));
+  width: calc(100% + var(--masthead-overhang));
   height: 100%;
 }
 
@@ -459,9 +566,11 @@ button.change-folder:hover {
 }
 
 .home-welcome h2 {
-  font-family: var(--font-display);
-  font-size: 2.4rem;
+  font-family: var(--font-heading);
+  font-size: 1.9rem;
   font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
   color: var(--text-bright);
   margin: 0 0 0.5rem;
   text-shadow:
@@ -475,100 +584,149 @@ button.change-folder:hover {
   margin: 0 0 1.5rem;
 }
 
-.pinned-actions {
+/* Home: one banner per game mode */
+
+.mode-banners {
   display: flex;
-  flex-wrap: wrap;
-  gap: 1rem;
-  margin: 0 0 1.2rem;
+  flex-direction: column;
+  gap: 0.9rem;
   max-width: 68rem;
 }
 
-.pinned-action {
-  flex: 1 1 260px;
+/* The client-page banners, cropped shorter (4:1 instead of 16:5). Copy and
+   buttons sit along the bottom edge, leaving the art clear above them. */
+.mode-banner {
+  position: relative;
   display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.9rem;
-  padding: 0.9rem 1rem;
-  background:
-    radial-gradient(ellipse 90% 160% at 0% 50%, rgba(102, 252, 241, 0.08) 0%, transparent 65%),
-    var(--surface-elevated);
-  border: 1px solid var(--primary-dim);
-  border-radius: 8px;
+  align-items: flex-end;
+  padding-bottom: 1rem;
+  aspect-ratio: 4 / 1;
+  min-height: 120px;
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  transition: border-color 0.15s;
 }
 
-.pinned-action-btn {
-  flex-shrink: 0;
-  font-family: inherit;
+.mode-banner:hover {
+  border-color: var(--border-hover);
+}
+
+.mode-banner-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* Darkens just the bottom strip so the title always reads, whatever's in
+   the art, without dimming the rest of the image. */
+.mode-banner::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: linear-gradient(0deg, rgba(5, 7, 10, 0.88) 0%, rgba(5, 7, 10, 0.5) 32%, rgba(5, 7, 10, 0) 62%);
+  pointer-events: none;
+}
+
+.mode-banner-text,
+.mode-banner-actions {
+  position: relative;
+  z-index: 2;
+}
+
+.mode-banner-text {
+  flex: 1;
+  min-width: 0;
+  padding: 0 1.6rem;
+}
+
+.mode-banner-title {
+  margin: 0;
+  font-family: var(--font-heading);
+  font-size: 1.55rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #fff;
+  text-shadow: 0 2px 14px rgba(0, 0, 0, 0.85);
+}
+
+.mode-banner-meta {
+  margin: 0.4rem 0 0;
+  font-size: 0.78rem;
+  color: rgba(255, 255, 255, 0.78);
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.9);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mode-banner-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-right: 1.4rem;
+  padding: 0.35rem;
+  background: rgba(8, 10, 14, 0.62);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 9px;
+  backdrop-filter: blur(6px);
+}
+
+.mode-play-btn {
+  font-family: var(--font-heading);
   font-size: 0.95rem;
   font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
   color: var(--bg);
   background: var(--primary);
-  border: none;
-  border-radius: 7px;
-  padding: 0.7rem 1.3rem;
+  border: 1px solid var(--primary);
+  border-radius: 6px;
+  padding: 0.55rem 1.4rem;
   cursor: pointer;
 }
 
-.pinned-action-btn:hover {
+.mode-play-btn:hover:not(:disabled) {
   background: var(--primary-dim);
+  border-color: var(--primary-dim);
 }
 
-.pinned-action-btn:disabled {
-  color: var(--text-dim);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  font-weight: 500;
+.mode-play-btn:disabled {
+  opacity: 0.4;
   cursor: default;
 }
 
-.pinned-action-info {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
-}
-
-.pinned-action-server {
-  font-family: var(--font-display);
-  font-weight: 600;
-  font-size: 0.9rem;
+.mode-play-btn--install {
   color: var(--text-bright);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  background: transparent;
+  border-color: rgba(255, 255, 255, 0.3);
 }
 
-.pinned-action-meta {
-  font-size: 0.76rem;
-  color: var(--datapad-blue);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.mode-play-btn--install:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--border-hover);
 }
 
-.pinned-action-edit-btn {
-  flex-shrink: 0;
-  width: 2rem;
-  height: 2rem;
+.mode-gear-btn {
+  width: 2.35rem;
+  height: 2.35rem;
+  font-size: 1.1rem;
   line-height: 1;
-  font-size: 0.95rem;
-  color: var(--text-dim);
-  background: none;
-  border: 1px solid var(--border);
+  color: var(--text-bright);
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.16);
   border-radius: 6px;
   cursor: pointer;
 }
 
-.pinned-action-edit-btn:hover {
-  color: var(--text-bright);
-  border-color: var(--primary-dim);
-}
-
-.pinned-action .detail-status {
-  flex-basis: 100%;
-  margin: 0.3rem 0 0;
+.mode-gear-btn:hover {
+  border-color: var(--border-hover);
+  background: rgba(255, 255, 255, 0.06);
 }
 
 .pinned-edit-field {
@@ -680,6 +838,47 @@ button.change-folder:hover {
   margin: 0 0 1rem;
 }
 
+/* CTF page: Play CTF, same as the Home banner's Play. */
+.ctf-play-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  max-width: 68rem;
+  margin: 0 0 1.6rem;
+}
+
+.ctf-play-meta {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+}
+
+/* CTF page: the way out to the full site, far right of the Play CTF row. */
+.ctf-site-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin-left: auto;
+  padding: 0.6rem 1.3rem;
+  font-family: var(--font-heading);
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  text-decoration: none;
+  color: var(--bg);
+  background: var(--primary);
+  border: 1px solid var(--primary);
+  border-radius: 7px;
+  box-shadow: 0 0 12px color-mix(in srgb, var(--primary) 30%, transparent);
+  transition: background 0.15s, box-shadow 0.15s;
+}
+
+.ctf-site-btn:hover {
+  background: var(--primary-dim);
+  box-shadow: 0 0 18px color-mix(in srgb, var(--primary) 45%, transparent);
+}
+
 .login-form {
   display: flex;
   gap: 0.6rem;
@@ -731,9 +930,10 @@ button.change-folder:hover {
 }
 
 .home-feed-label {
-  font-family: "SF Mono", ui-monospace, Menlo, monospace;
-  font-size: 0.68rem;
-  letter-spacing: 0.08em;
+  font-family: var(--font-heading);
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
   color: var(--primary);
   text-transform: uppercase;
   margin: 0 0 0.7rem;
@@ -1252,9 +1452,10 @@ button.change-folder:hover {
 }
 
 .stats-month-label {
-  font-family: "SF Mono", ui-monospace, Menlo, monospace;
-  font-size: 0.68rem;
-  letter-spacing: 0.08em;
+  font-family: var(--font-heading);
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--text-dim);
   margin: 0.5rem 0 0.3rem;
@@ -1571,7 +1772,9 @@ button.change-folder:hover {
 
 .confirm-title {
   margin: 0 0 0.5rem;
-  font-family: var(--font-display);
+  font-family: var(--font-heading);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
   font-size: 1.05rem;
   color: var(--text-bright);
 }
@@ -1691,4 +1894,504 @@ button.change-folder:hover {
   color: var(--text);
   font-family: "SF Mono", ui-monospace, Menlo, monospace;
   font-size: 0.7rem;
+}
+
+/* Media view: screenshots and demos */
+
+/* Two rows on one grid: tabs, search, Refresh on top; client chips under
+   the first two, and Demo Cut Requests (Demos tab) under Refresh. */
+.media-toolbar {
+  display: grid;
+  /* Tabs and the buttons keep their size; search gives way on a narrow window. */
+  grid-template-columns: max-content minmax(120px, 320px) max-content;
+  justify-content: start;
+  align-items: center;
+  gap: 0.6rem 0.7rem;
+  margin: 0 0 0.8rem;
+}
+
+/* Grid cells stretch by default - Refresh stays its own size. */
+.media-toolbar > .change-folder {
+  justify-self: start;
+}
+
+.media-tabs {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.media-tab {
+  white-space: nowrap;
+  font-family: inherit;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--text-dim);
+  background: var(--surface);
+  border: none;
+  padding: 0.45rem 0.9rem;
+  cursor: pointer;
+}
+
+.media-tab + .media-tab {
+  border-left: 1px solid var(--border);
+}
+
+.media-tab.active .media-tab-count {
+  opacity: 0.65;
+}
+
+.media-tab:hover:not(.active) {
+  color: var(--text);
+}
+
+.media-tab.active {
+  background: var(--primary);
+  color: var(--bg);
+}
+
+.media-tab-count {
+  font-family: "SF Mono", ui-monospace, Menlo, monospace;
+  font-size: 0.7rem;
+  opacity: 0.75;
+  margin-left: 0.25rem;
+}
+
+.monolith-search-input.media-search {
+  max-width: none;
+  margin: 0;
+}
+
+.media-chips {
+  grid-column: 1 / 3;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.media-chip {
+  font-family: inherit;
+  font-size: 0.76rem;
+  font-weight: 500;
+  color: var(--text-dim);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.3rem 0.8rem;
+  cursor: pointer;
+}
+
+.media-chip:hover:not(.active) {
+  border-color: var(--border-hover);
+}
+
+.media-chip.active {
+  color: var(--bg);
+  background: var(--primary);
+  border-color: var(--primary);
+}
+
+.detail-status code {
+  font-family: "SF Mono", ui-monospace, Menlo, monospace;
+  color: var(--text);
+}
+
+.media-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 0.7rem;
+  max-width: 68rem;
+}
+
+.media-thumb {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 0 0 0.5rem;
+  font-family: inherit;
+  text-align: left;
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.media-thumb:hover {
+  border-color: var(--border-hover);
+}
+
+.media-thumb.selected {
+  border-color: var(--primary);
+  box-shadow: 0 0 10px rgba(102, 252, 241, 0.3);
+}
+
+.media-thumb-img {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 16 / 10;
+  background: var(--surface);
+  margin-bottom: 0.45rem;
+}
+
+.media-thumb-img img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.media-thumb-fallback {
+  font-size: 0.72rem;
+  color: var(--text-dim);
+}
+
+.media-thumb-name,
+.media-thumb-meta {
+  padding: 0 0.6rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.media-thumb-name {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-bright);
+}
+
+.media-thumb-meta {
+  font-size: 0.7rem;
+  color: var(--text-dim);
+}
+
+/* Sticks to the bottom of the scrolling pane so the actions stay in reach
+   for a screenshot picked far down the grid. */
+.media-selection-bar {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  max-width: 68rem;
+  margin-top: 1rem;
+  padding: 0.6rem 0.8rem;
+  background: var(--surface-elevated);
+  border: 1px solid var(--border-hover);
+  border-radius: 8px;
+  box-shadow: 0 -6px 20px rgba(0, 0, 0, 0.35);
+}
+
+.media-selection-info {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.media-selection-name {
+  color: var(--text-bright);
+  font-weight: 600;
+}
+
+.media-trash-btn {
+  flex-shrink: 0;
+  font-family: inherit;
+  font-size: 0.72rem;
+  color: var(--danger);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0.25rem 0.5rem;
+  cursor: pointer;
+}
+
+.media-trash-btn:hover {
+  border-color: var(--danger);
+}
+
+.profile-link.media-democuts-link {
+  grid-column: 3;
+  justify-self: start;
+  font-size: 0.76rem;
+  padding: 0.3rem 0.75rem;
+  white-space: nowrap;
+}
+
+.media-demo-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-width: 68rem;
+}
+
+.media-demo-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem 1rem;
+  padding: 0.65rem 0.9rem;
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.media-demo-info {
+  flex: 1;
+  min-width: 12rem;
+}
+
+.media-demo-name {
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-bright);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.media-demo-tag {
+  margin-left: 0.3rem;
+  padding: 0.05rem 0.35rem;
+  font-family: "SF Mono", ui-monospace, Menlo, monospace;
+  font-size: 0.66rem;
+  font-weight: 500;
+  color: var(--text-dim);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  vertical-align: 1px;
+}
+
+.media-demo-meta {
+  margin: 0.15rem 0 0;
+  font-size: 0.74rem;
+  color: var(--text-dim);
+}
+
+.media-demo-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-shrink: 0;
+}
+
+.media-demo-actions .server-client-select {
+  max-width: 11rem;
+  font-size: 0.76rem;
+  padding: 0.28rem 0.5rem;
+}
+
+.media-demo-note {
+  font-size: 0.72rem;
+  color: var(--text-dim);
+}
+
+.media-watch-btn {
+  font-family: inherit;
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: var(--bg);
+  background: var(--primary);
+  border: 1px solid var(--primary);
+  border-radius: 5px;
+  padding: 0.28rem 0.75rem;
+  cursor: pointer;
+}
+
+.media-watch-btn:hover {
+  background: var(--primary-dim);
+}
+
+.dialog-error {
+  min-height: 1.1em;
+  margin: -0.4rem 0 0.8rem;
+  font-size: 0.76rem;
+  color: var(--danger);
+}
+
+.pinned-edit-field input {
+  font-family: inherit;
+  font-size: 0.85rem;
+  color: var(--text-bright);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.45rem 0.6rem;
+}
+
+.pinned-edit-field input:focus {
+  outline: none;
+  border-color: var(--border-hover);
+}
+
+.media-viewer {
+  gap: 1rem;
+  background: rgba(5, 6, 8, 0.88);
+}
+
+.media-viewer-figure {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0;
+  max-width: calc(100vw - 9rem);
+}
+
+.media-viewer-img {
+  max-width: 100%;
+  max-height: calc(100vh - 6rem);
+  border-radius: 6px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+}
+
+.media-viewer-caption {
+  font-size: 0.78rem;
+  color: var(--text);
+}
+
+.media-viewer-nav {
+  flex-shrink: 0;
+  width: 2.6rem;
+  height: 2.6rem;
+  font-size: 1.1rem;
+  color: var(--text-bright);
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.media-viewer-nav:hover {
+  border-color: var(--border-hover);
+}
+
+/* Config: presets */
+
+.preset-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  margin: 0 0 0.6rem;
+}
+
+.preset-toolbar-label {
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  margin-right: 0.2rem;
+}
+
+.preset-toolbar-sep {
+  width: 1px;
+  height: 1.2rem;
+  background: var(--border);
+  margin: 0 0.4rem;
+}
+
+.preset-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  max-width: 68rem;
+  margin: 0.4rem 0 1.2rem;
+}
+
+.preset-card {
+  padding: 0.75rem 0.9rem;
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.preset-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.preset-info {
+  flex: 1;
+  min-width: 12rem;
+}
+
+.preset-name {
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-bright);
+}
+
+.preset-meta {
+  margin: 0.15rem 0 0;
+  font-size: 0.74rem;
+  color: var(--text-dim);
+}
+
+.preset-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.preset-scope {
+  font-size: 0.72rem;
+}
+
+.preset-chips {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  margin-top: 0.6rem;
+}
+
+.preset-chips-label {
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  margin-right: 0.2rem;
+}
+
+.preset-note {
+  max-width: 60ch;
+}
+
+/* The preset editor: a taller dialog with a monospace text area. */
+.confirm-dialog--editor {
+  width: min(600px, calc(100vw - 4rem));
+}
+
+.dialog-input,
+.dialog-textarea {
+  font-family: inherit;
+  font-size: 0.85rem;
+  color: var(--text-bright);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.45rem 0.6rem;
+}
+
+.dialog-textarea {
+  font-family: "SF Mono", ui-monospace, Menlo, monospace;
+  font-size: 0.74rem;
+  line-height: 1.5;
+  height: 320px;
+  resize: vertical;
+  white-space: pre;
+}
+
+.dialog-input:focus,
+.dialog-textarea:focus {
+  outline: none;
+  border-color: var(--border-hover);
 }

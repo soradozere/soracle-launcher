@@ -2,10 +2,13 @@
 
 A desktop app (Tauri v2) for the [JK2 CTF](https://jk2ctf.com) community that
 installs, updates, and launches Jedi Knight II client mods — currently
-Tommyternal (Defrag/FFA), OpenJO, and JK2MV — without manually copying game
-assets around. It also manages custom PK3 mods per client, browses the
-[Monolith](https://github.com/fl4te/monolith) community mod database, and
-shows JK2 CTF player stats and activity on its Home screen.
+NWH (Capture the Flag), Tommyternal (Defrag), JK2MV (FFA), and OpenJO
+(Campaign) — without manually copying game assets around. Home has a one-click
+Play for each mode. It also manages custom PK3 mods per client, browses the
+[Monolith](https://github.com/fl4te/monolith) community mod database, gathers
+every client's screenshots and demos in one place, keeps config presets (a
+client's binds and settings, or an imported .cfg) that can be applied to any
+client at launch, and shows JK2 CTF player stats and activity on its CTF page.
 
 **Platform status**: macOS is fully supported and well-tested (install/
 update/launch for all three clients, PK3 mod management, auto-updates).
@@ -20,6 +23,12 @@ rather than an archive built to be dropped in as-is - if it doesn't launch,
 that's the first thing to check (see the comment on `extract_jk2mv_linux` in
 `src-tauri/src/lib.rs`). If you try either platform, an issue report (what
 happened, plus the client and OS) is genuinely useful.
+
+NWH comes from [jk2ctf.com/nwh-download](https://jk2ctf.com/nwh-download),
+which has builds for all three platforms. Its macOS install (an `NWH.app`,
+Apple Silicon) has been checked end to end through the launcher's own install
+code, but not yet launched from it; its Windows and Linux installs haven't
+been run on a real machine.
 
 ## Download
 
