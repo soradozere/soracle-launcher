@@ -40,6 +40,14 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
+      # Tommyternal's macOS build links Homebrew's SDL2/OpenSSL by absolute
+      # path; the launcher ships its own copies (bundle.macOS.files) so the
+      # game runs on a Mac without Homebrew. Fetched here, pinned by digest,
+      # rather than committed - see the script for why and how to bump.
+      - name: Fetch macOS client dylibs
+        if: matrix.platform == 'macos-latest'
+        run: ./scripts/fetch-macos-dylibs.sh
+
       - name: Install frontend dependencies
         run: pnpm install
 
