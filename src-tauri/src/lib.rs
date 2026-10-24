@@ -2743,6 +2743,74 @@ fn rename_demo(app: tauri::AppHandle, path: String, new_name: String) -> Result<
     Ok(target.to_string_lossy().to_string())
 }
 
+// A file dialog for screenshots and demos to bring in - on a worker thread,
+// like the other pickers. The choice of client comes after, from the page.
+#[tauri::command]
+async fn pick_media_files(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+    let picked = app
+        .dialog()
+        .file()
+        .add_filter("Screenshots and demos", &["jpg", "jpeg", "png", "tga", "dm_15", "dm_16"])
+        .set_title("Choose screenshots or demos to add")
+        .blocking_pick_files();
+    let Some(files) = picked else { return Ok(Vec::new()) };
+    files
+        .into_iter()
+        .map(|f| f.into_path().map(|p| p.to_string_lossy().to_string()).map_err(|e| e.to_string()))
+        .collect()
+}
+
+// Where added media for a client goes: that client's own game dir (the one
+// its PK3 mods live in), so it shows under that client alone and the
+// client finds it when the dir is active. "all" means base/ of the default
+// game folder, which every client there reads.
+fn media_import_dir(app: &tauri::AppHandle, client: &str, kind: MediaKind) -> Result<std::path::PathBuf, String> {
+    let dir = if client == PK3_ALL_TARGET {
+        find_jk2_base_and_root(app, None)?.0
+    } else if PK3_CLIENT_IDS.contains(&client) {
+        client_pk3_dir(app, client).ok_or_else(|| format!("No game folder for {client}"))?
+    } else {
+        return Err(format!("Unknown client: {client}"));
+    };
+    Ok(dir.join(kind.subdir()))
+}
+
+#[derive(serde::Serialize)]
+struct MediaImportResult {
+    added: usize,
+    skipped: Vec<String>,
+}
+
+// Copies the picked files into place. A name already there is left alone
+// and reported, rather than overwritten: a demo of a match that's gone is
+// not something to lose to a stray click.
+#[tauri::command]
+fn import_media_files(app: tauri::AppHandle, client: String, paths: Vec<String>) -> Result<MediaImportResult, String> {
+    let mut result = MediaImportResult { added: 0, skipped: Vec::new() };
+    for path in &paths {
+        let source = std::path::Path::new(path);
+        let name = source
+            .file_name()
+            .ok_or_else(|| format!("{path} isn't a file"))?
+            .to_string_lossy()
+            .to_string();
+        let Some(kind) = [MediaKind::Screenshot, MediaKind::Demo].into_iter().find(|k| k.matches(source)) else {
+            result.skipped.push(format!("{name} (not a screenshot or demo)"));
+            continue;
+        };
+        let dir = media_import_dir(&app, &client, kind)?;
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let dest = dir.join(&name);
+        if dest.exists() {
+            result.skipped.push(format!("{name} (already there)"));
+            continue;
+        }
+        std::fs::copy(source, &dest).map_err(|e| format!("{name}: {e}"))?;
+        result.added += 1;
+    }
+    Ok(result)
+}
+
 // Launches a client with extra console arguments. Goes by the binary's
 // shape rather than a per-client special case: a macOS .app bundle has to go
 // through `open --args` (which returns at once, so there's no start-up check
@@ -3005,6 +3073,8 @@ pub fn run() {
             trash_media,
             rename_demo,
             play_demo,
+            pick_media_files,
+            import_media_files,
             list_config_presets,
             save_preset_from_client,
             import_config_preset,

@@ -1528,7 +1528,7 @@ function renderModsView(mainEl) {
     })
     .join("");
   const installedHtml = pk3Mods.length
-    ? `<div class="media-chips">${clientChips}</div>
+    ? `<div class="media-chips media-chips--above">${clientChips}</div>
        <input type="text" id="installed-mods-search" class="monolith-search-input" placeholder="Search your installed mods..." value="${escapeHtml(installedModsSearch)}">
        <div id="installed-mods-results">${renderInstalledModsResults()}</div>`
     : `<p class="detail-status">No mods added yet.</p>`;
@@ -1633,6 +1633,45 @@ function showTextDialog({ title, label, value, confirmLabel = "Save", multiline 
     });
     overlay.querySelector(".confirm-cancel-btn").addEventListener("click", () => finish(null));
     overlay.querySelector(".confirm-ok-btn").addEventListener("click", save);
+  });
+}
+
+// A pick-one dialog: `options` are {value, label}; resolves the chosen
+// value, or null if cancelled.
+function showChoiceDialog({ title, label, options, value, confirmLabel = "OK" }) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "confirm-overlay";
+    overlay.innerHTML = `
+      <div class="confirm-dialog confirm-dialog--wide">
+        <h3 class="confirm-title">${escapeHtml(title)}</h3>
+        <label class="pinned-edit-field">
+          <span>${escapeHtml(label)}</span>
+          <select class="dialog-select">
+            ${options.map((o) => `<option value="${escapeHtml(o.value)}" ${o.value === value ? "selected" : ""}>${escapeHtml(o.label)}</option>`).join("")}
+          </select>
+        </label>
+        <div class="confirm-actions">
+          <button class="confirm-cancel-btn">Cancel</button>
+          <button class="confirm-ok-btn">${escapeHtml(confirmLabel)}</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const select = overlay.querySelector(".dialog-select");
+    select.focus();
+    function finish(result) {
+      overlay.remove();
+      resolve(result);
+    }
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay) finish(null);
+    });
+    select.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") finish(select.value);
+      if (e.key === "Escape") finish(null);
+    });
+    overlay.querySelector(".confirm-cancel-btn").addEventListener("click", () => finish(null));
+    overlay.querySelector(".confirm-ok-btn").addEventListener("click", () => finish(select.value));
   });
 }
 
@@ -1867,7 +1906,9 @@ function refreshMedia() {
   mediaError = null;
 }
 
+let mediaStatus = "";
 function setMediaStatus(message) {
+  mediaStatus = message;
   const el = document.getElementById("media-status");
   if (el) el.textContent = message;
 }
@@ -2076,11 +2117,14 @@ function renderMediaView(mainEl) {
         <button class="media-tab ${mediaKind === "demo" ? "active" : ""}" data-media-kind="demo">Demos <span class="media-tab-count">${count("demo")}</span></button>
       </div>
       <input type="text" id="media-search" class="monolith-search-input media-search" placeholder="Search by name..." value="${escapeHtml(mediaSearch)}">
-      <button class="change-folder" id="media-refresh-btn">Refresh</button>
+      <span class="media-toolbar-btns">
+        <button class="change-folder" id="media-add-btn">Add...</button>
+        <button class="change-folder" id="media-refresh-btn">Refresh</button>
+      </span>
       ${chipsHtml}
       ${mediaKind === "demo" ? demoCutRequestsHtml : ""}
     </div>
-    <p class="detail-status" id="media-status"></p>
+    <p class="detail-status" id="media-status">${escapeHtml(mediaStatus)}</p>
     <div id="media-results">${renderMediaResults()}</div>
   `;
   loadVisibleThumbs();
@@ -2196,6 +2240,45 @@ async function copyScreenshot(path) {
     setMediaStatus("Copied to clipboard");
   } catch (err) {
     setMediaStatus(`Couldn't copy: ${err}`);
+  }
+}
+
+// Pick the files first, the client second: the file dialog is the slow,
+// cancellable step, and the client question only makes sense once there's
+// something to put somewhere.
+async function addMedia() {
+  const { invoke } = window.__TAURI__.core;
+  let paths;
+  try {
+    paths = await invoke("pick_media_files");
+  } catch (err) {
+    setMediaStatus(`Error: ${err}`);
+    return;
+  }
+  if (!paths.length) return;
+  const installed = pk3TargetClients().filter((c) => modState[c.name]?.installed);
+  const options = [
+    { value: "all", label: "Shared - every client in the default game folder" },
+    ...installed.map((c) => ({ value: c.id, label: clientLabel(c.id) })),
+  ];
+  const noun = paths.length === 1 ? "this file" : `these ${paths.length} files`;
+  const client = await showChoiceDialog({
+    title: "Add to which client?",
+    label: `Where ${noun} should go - a client's own folder, or shared`,
+    options,
+    value: installed.length === 1 ? installed[0].id : "all",
+    confirmLabel: "Add",
+  });
+  if (client === null) return;
+  try {
+    const result = await invoke("import_media_files", { client, paths });
+    const added = `${result.added} ${result.added === 1 ? "file" : "files"} added`;
+    setMediaStatus(result.skipped.length ? `${added}; skipped ${result.skipped.join(", ")}` : added);
+    refreshMedia();
+    renderMainPreservingScroll();
+    setMediaStatus(result.skipped.length ? `${added}; skipped ${result.skipped.join(", ")}` : added);
+  } catch (err) {
+    setMediaStatus(`Error: ${err}`);
   }
 }
 
@@ -2316,6 +2399,10 @@ function handleMediaClick(e) {
   if (watchBtn) {
     const clientId = watchBtn.dataset.client ?? watchBtn.closest(".media-demo-actions").querySelector(".media-watch-client").value;
     watchDemo(watchBtn.dataset.mediaWatch, clientId);
+    return true;
+  }
+  if (e.target.closest("#media-add-btn")) {
+    addMedia();
     return true;
   }
   if (e.target.closest("#media-refresh-btn")) {
