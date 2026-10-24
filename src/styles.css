@@ -589,19 +589,20 @@ button.change-folder:hover {
 .mode-banners {
   display: flex;
   flex-direction: column;
-  gap: 0.9rem;
+  gap: 0.75rem;
   max-width: 68rem;
 }
 
-/* The client-page banners, cropped shorter (4:1 instead of 16:5). Copy and
+/* The client-page banners, cropped to a strip. Sized to the window rather
+   than the art's proportions, so all four fit without scrolling: the
+   header and gaps take about 12rem, the rest is split four ways. Copy and
    buttons sit along the bottom edge, leaving the art clear above them. */
 .mode-banner {
   position: relative;
   display: flex;
   align-items: flex-end;
-  padding-bottom: 1rem;
-  aspect-ratio: 4 / 1;
-  min-height: 120px;
+  padding-bottom: 0.9rem;
+  height: clamp(92px, calc((100vh - 12.5rem) / 4), 170px);
   overflow: hidden;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -647,7 +648,7 @@ button.change-folder:hover {
 .mode-banner-title {
   margin: 0;
   font-family: var(--font-heading);
-  font-size: 1.55rem;
+  font-size: clamp(1.1rem, 2.2vh + 0.4rem, 1.55rem);
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
