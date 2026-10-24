@@ -851,10 +851,11 @@ button.change-folder:hover {
 
 /* CTF page: the way out to the full site, under sign-in (or your stats). */
 .ctf-site-btn {
-  display: inline-flex;
+  display: flex;
+  width: fit-content;
   align-items: center;
   gap: 0.45rem;
-  margin: 0 0 2rem;
+  margin: 0.9rem 0 2rem;
   padding: 0.6rem 1.3rem;
   font-family: var(--font-heading);
   font-size: 0.85rem;
