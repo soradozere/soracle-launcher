@@ -1783,76 +1783,77 @@ fn remove_pk3_mod(app: tauri::AppHandle, filename: String) -> Result<(), String>
     Ok(())
 }
 
-// --- Shared settings: one client's controls and settings in all of them ----
-// Each client keeps its own config, so binds and settings drift apart. The
-// launcher takes a chosen client's config, keeps the lines in the chosen
-// categories, and writes them as launcher_shared.cfg into every client that
-// opted in, then adds `+exec launcher_shared.cfg` to that client's launch.
-// The engine runs that after the client's own config, so these values win -
-// and the client saves them into its own config on exit. The clients' own
-// config files are never edited.
+// --- Config presets: a client's settings, named, applied to any client ----
+// Each client keeps its own config, so binds and settings drift apart. A
+// preset is one config's worth of binds and settings - saved from a client
+// or imported from a .cfg - and each client can have one preset applied.
+// Launching a client from here writes its preset as launcher_shared.cfg
+// into the folders it reads and adds `+exec launcher_shared.cfg`: the
+// engine runs that after the client's own config, so the preset wins, and
+// the client then saves those values itself. The clients' own config files
+// are never edited.
 
 const SHARED_CFG_NAME: &str = "launcher_shared.cfg";
 
-// Which cvars count as which category. `bind` lines (and `unbindall`) are
-// the controls category on their own.
-const SHARED_CATEGORIES: [(&str, &[&str]); 4] = [
-    ("mouse_view", &[
-        "sensitivity", "m_pitch", "m_yaw", "m_forward", "m_side", "m_filter", "in_mouse",
-        "cl_mouseaccel", "cl_mouseaccelstyle", "cl_freelook", "cl_run", "cl_yawspeed", "cl_pitchspeed",
-        "cg_fov", "cg_fovaspectadjust", "cg_fovviewmodel", "cg_fovviewmodeladjust",
-    ]),
-    ("video", &[
-        "r_mode", "r_customwidth", "r_customheight", "r_fullscreen", "r_noborder", "r_swapinterval",
-        "r_displayrefresh", "r_gamma", "r_intensity", "r_picmip", "r_texturebits", "r_colorbits",
-        "r_depthbits", "r_texturemode", "r_ext_texture_filter_anisotropic", "r_lodbias",
-        "r_detailtextures", "r_dynamiclight", "r_fastsky", "com_maxfps", "cg_drawfps",
-    ]),
-    ("audio", &["s_volume", "s_musicvolume", "s_khz", "s_useopenal", "s_doppler", "s_mixahead"]),
-    ("player", &["name", "model", "color1", "color2", "saber", "sex", "forcepowers"]),
+// Settings that mustn't travel between clients: where files are, server
+// and network setup, memory sizes, and a client's own identity (NWH's
+// anti-cheat id, for one).
+const PRESET_SKIP_PREFIXES: [&str; 12] = [
+    "fs_", "sv_", "net_", "g_", "rcon", "password", "dedicated", "com_hunkmegs", "com_zonemegs", "com_soundmegs",
+    "logfile", "nwh_",
 ];
-const CONTROLS_CATEGORY: &str = "controls";
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
-struct SharedLine {
-    category: String,
-    // "bind <key>" or the cvar name - what a later line with the same key
-    // replaces.
-    key: String,
-    line: String,
+struct ConfigPreset {
+    id: String,
+    name: String,
+    // "Saved from Tommyternal", "Imported from tourney.cfg" - for the list.
+    origin: String,
+    // The client it was saved from, if any - what Update re-reads.
+    #[serde(default)]
+    source_client: Option<String>,
+    created: u64,
+    updated: u64,
+    #[serde(default)]
+    controls_only: bool,
+    lines: Vec<String>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
-struct SharedSettingsStore {
-    source: Option<String>,
+struct ConfigPresetStore {
     #[serde(default)]
-    pulled_at: u64,
+    presets: Vec<ConfigPreset>,
+    // client id -> preset id
     #[serde(default)]
-    categories: Vec<String>,
-    #[serde(default)]
-    targets: Vec<String>,
-    #[serde(default)]
-    lines: Vec<SharedLine>,
+    assignments: std::collections::HashMap<String, String>,
 }
 
-fn shared_settings_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("shared_settings.json"))
+fn preset_store_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("config_presets.json"))
 }
 
-fn load_shared_settings(app: &tauri::AppHandle) -> SharedSettingsStore {
-    shared_settings_path(app)
+fn load_presets(app: &tauri::AppHandle) -> ConfigPresetStore {
+    preset_store_path(app)
         .ok()
         .and_then(|p| std::fs::read_to_string(p).ok())
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default()
 }
 
-fn save_shared_settings_store(app: &tauri::AppHandle, store: &SharedSettingsStore) -> Result<(), String> {
-    let path = shared_settings_path(app)?;
+fn save_presets(app: &tauri::AppHandle, store: &ConfigPresetStore) -> Result<(), String> {
+    let path = preset_store_path(app)?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     std::fs::write(path, serde_json::to_string_pretty(store).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+}
+
+fn new_preset_id() -> String {
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    format!("{millis:x}")
 }
 
 // The config each client writes and the game dir it writes it into, plus
@@ -1880,6 +1881,12 @@ fn client_cfg_roots(app: &tauri::AppHandle, client_id: &str) -> Vec<std::path::P
     roots
 }
 
+fn newest_file(candidates: impl Iterator<Item = std::path::PathBuf>) -> Option<std::path::PathBuf> {
+    candidates
+        .filter(|p| p.is_file())
+        .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
+}
+
 // The client's current config - the newest copy wherever it writes one.
 // With PK3 mods active a client runs in its launchermods_ folder and writes
 // its config there instead, so that's checked too.
@@ -1898,17 +1905,11 @@ fn find_client_global_cfg(app: &tauri::AppHandle, client_id: &str) -> Option<std
     newest_file(client_cfg_roots(app, client_id).into_iter().map(|root| root.join("base").join(global)))
 }
 
-fn newest_file(candidates: impl Iterator<Item = std::path::PathBuf>) -> Option<std::path::PathBuf> {
-    candidates
-        .filter(|p| p.is_file())
-        .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
-}
-
 // Both of a client's configs as one text, global first so the main config
 // wins where they overlap.
 fn read_client_cfgs(app: &tauri::AppHandle, client_id: &str) -> Result<String, String> {
     let main = find_client_cfg(app, client_id)
-        .ok_or_else(|| "That client hasn't written a config yet - run it once first".to_string())?;
+        .ok_or_else(|| "That client hasn't saved a config yet - run it once first".to_string())?;
     let mut text = String::new();
     if let Some(global) = find_client_global_cfg(app, client_id) {
         text.push_str(&std::fs::read_to_string(global).map_err(|e| e.to_string())?);
@@ -1937,73 +1938,96 @@ fn shared_cfg_dirs(app: &tauri::AppHandle, client_id: &str) -> Vec<std::path::Pa
     dirs
 }
 
-fn categorise_cfg_line(line: &str) -> Option<(String, String)> {
-    let trimmed = line.trim();
-    let mut words = trimmed.split_whitespace();
+// What a cfg line is for a preset: a bind, a setting, or neither.
+enum CfgLineKind {
+    Bind,
+    Setting,
+}
+
+fn classify_cfg_line(line: &str) -> Option<(CfgLineKind, String)> {
+    let mut words = line.trim().split_whitespace();
     let first = words.next()?.to_ascii_lowercase();
     if first == "unbindall" {
-        return Some((CONTROLS_CATEGORY.to_string(), "unbindall".to_string()));
+        return Some((CfgLineKind::Bind, "unbindall".to_string()));
     }
     let name = words.next()?.to_ascii_lowercase();
-    if first == "bind" {
-        return Some((CONTROLS_CATEGORY.to_string(), format!("bind {name}")));
+    match first.as_str() {
+        "bind" => Some((CfgLineKind::Bind, format!("bind {name}"))),
+        "seta" | "set" => {
+            if PRESET_SKIP_PREFIXES.iter().any(|p| name.starts_with(p)) {
+                None
+            } else {
+                Some((CfgLineKind::Setting, name))
+            }
+        }
+        _ => None,
     }
-    if first != "seta" && first != "set" {
-        return None;
-    }
-    SHARED_CATEGORIES
-        .iter()
-        .find(|(_, cvars)| cvars.contains(&name.as_str()))
-        .map(|(category, _)| (category.to_string(), name))
 }
 
-fn extract_shared_lines(cfg_text: &str) -> Vec<SharedLine> {
-    let mut lines: Vec<SharedLine> = Vec::new();
-    for line in cfg_text.lines() {
-        let Some((category, key)) = categorise_cfg_line(line) else { continue };
-        let entry = SharedLine { category, key, line: line.trim().to_string() };
-        match lines.iter_mut().find(|l| l.key == entry.key) {
-            Some(existing) => *existing = entry,
-            None => lines.push(entry),
+// Keeps only the lines a preset carries, a later line replacing an earlier
+// one for the same key (the main config after the global one), binds
+// first so `unbindall` runs before anything else.
+fn preset_lines_from_text(text: &str) -> Vec<String> {
+    let mut binds: Vec<(String, String)> = Vec::new();
+    let mut settings: Vec<(String, String)> = Vec::new();
+    for raw in text.lines() {
+        let Some((kind, key)) = classify_cfg_line(raw) else { continue };
+        let list = match kind {
+            CfgLineKind::Bind => &mut binds,
+            CfgLineKind::Setting => &mut settings,
+        };
+        let line = raw.trim().to_string();
+        match list.iter_mut().find(|(k, _)| *k == key) {
+            Some(entry) => entry.1 = line,
+            None => list.push((key, line)),
         }
     }
-    lines
+    binds.sort_by_key(|(k, _)| k != "unbindall");
+    binds.into_iter().chain(settings).map(|(_, line)| line).collect()
 }
 
-// The lines a given client gets: the chosen categories, controls first so
-// `unbindall` runs before anything else. OpenJO is the single-player game,
-// whose own settings differ - it only ever takes controls.
-fn shared_lines_for<'a>(store: &'a SharedSettingsStore, client_id: &str) -> Vec<&'a SharedLine> {
-    let mut lines: Vec<&SharedLine> = store
+fn preset_counts(preset: &ConfigPreset) -> (usize, usize) {
+    let binds = preset.lines.iter().filter(|l| l.to_ascii_lowercase().starts_with("bind ")).count();
+    let settings = preset.lines.iter().filter(|l| matches!(classify_cfg_line(l), Some((CfgLineKind::Setting, _)))).count();
+    (binds, settings)
+}
+
+fn preset_applied_lines(preset: &ConfigPreset) -> Vec<&String> {
+    preset
         .lines
         .iter()
-        .filter(|l| store.categories.contains(&l.category))
-        .filter(|l| client_id != OPENJO_MOD_ID || l.category == CONTROLS_CATEGORY)
-        .collect();
-    lines.sort_by_key(|l| (l.category != CONTROLS_CATEGORY, l.key != "unbindall"));
-    lines
+        .filter(|l| !preset.controls_only || matches!(classify_cfg_line(l), Some((CfgLineKind::Bind, _))))
+        .collect()
 }
 
-fn shared_cfg_text(store: &SharedSettingsStore, client_id: &str) -> String {
-    let mut text = String::from("// Written by JK2 Launcher (Config > Shared settings). Edit the source client's settings instead - this file is rewritten at every launch.\n");
-    for l in shared_lines_for(store, client_id) {
-        text.push_str(&l.line);
+fn preset_cfg_text(preset: &ConfigPreset) -> String {
+    let mut text = format!(
+        "// \"{}\" - written by JK2 Launcher (Config). Edit the preset there; this file is rewritten at every launch.\n",
+        preset.name.replace('\n', " ")
+    );
+    for line in preset_applied_lines(preset) {
+        text.push_str(line);
         text.push('\n');
     }
     text
 }
 
-// Writes (or, with nothing to share, removes) the client's copies. Returns
-// how many were written.
-fn write_shared_cfg(app: &tauri::AppHandle, store: &SharedSettingsStore, client_id: &str) -> Result<usize, String> {
+fn assigned_preset<'a>(store: &'a ConfigPresetStore, client_id: &str) -> Option<&'a ConfigPreset> {
+    let id = store.assignments.get(client_id)?;
+    store.presets.iter().find(|p| &p.id == id)
+}
+
+// Writes (or, with no preset applied, removes) the client's copies.
+// Returns how many were written.
+fn write_shared_cfg(app: &tauri::AppHandle, store: &ConfigPresetStore, client_id: &str) -> Result<usize, String> {
     let dirs = shared_cfg_dirs(app, client_id);
-    if shared_lines_for(store, client_id).is_empty() || !store.targets.iter().any(|t| t == client_id) {
+    let Some(preset) = assigned_preset(store, client_id).filter(|p| !preset_applied_lines(p).is_empty()) else {
         for dir in &dirs {
             let _ = std::fs::remove_file(dir.join(SHARED_CFG_NAME));
         }
         return Ok(0);
-    }
-    let text = shared_cfg_text(store, client_id);
+    };
+    let text = preset_cfg_text(preset);
     let mut written = 0;
     for dir in &dirs {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -2014,9 +2038,9 @@ fn write_shared_cfg(app: &tauri::AppHandle, store: &SharedSettingsStore, client_
 }
 
 // What a client's launch gets on top of its usual arguments. Rewrites the
-// file first, so a launch always runs the current shared settings.
+// file first, so a launch always runs the preset as it is now.
 fn shared_settings_args(app: &tauri::AppHandle, client_id: &str) -> Vec<String> {
-    let store = load_shared_settings(app);
+    let store = load_presets(app);
     match write_shared_cfg(app, &store, client_id) {
         Ok(n) if n > 0 => vec!["+exec".to_string(), SHARED_CFG_NAME.to_string()],
         _ => Vec::new(),
@@ -2024,124 +2048,209 @@ fn shared_settings_args(app: &tauri::AppHandle, client_id: &str) -> Vec<String> 
 }
 
 #[derive(serde::Serialize)]
-struct SharedCategoryCount {
-    id: &'static str,
-    count: usize,
+struct ConfigPresetView {
+    id: String,
+    name: String,
+    origin: String,
+    source_client: Option<String>,
+    updated: u64,
+    controls_only: bool,
+    binds: usize,
+    settings: usize,
+    applied_to: Vec<String>,
 }
 
 #[derive(serde::Serialize)]
-struct SharedClientInfo {
+struct ConfigClientView {
     id: &'static str,
-    cfg_path: Option<String>,
-    // Lines that would change this client's current settings, once it has
-    // a config to compare with.
-    changes: Option<usize>,
+    // Whether "Save from" this client is possible yet.
+    has_cfg: bool,
 }
 
 #[derive(serde::Serialize)]
-struct SharedSettingsView {
-    source: Option<String>,
-    pulled_at: u64,
-    categories: Vec<String>,
-    targets: Vec<String>,
-    available: Vec<SharedCategoryCount>,
-    clients: Vec<SharedClientInfo>,
-    preview: Vec<String>,
+struct ConfigView {
+    presets: Vec<ConfigPresetView>,
+    clients: Vec<ConfigClientView>,
 }
 
-fn shared_settings_view(app: &tauri::AppHandle, store: &SharedSettingsStore) -> SharedSettingsView {
-    let category_ids = std::iter::once(CONTROLS_CATEGORY).chain(SHARED_CATEGORIES.iter().map(|(id, _)| *id));
-    let available = category_ids
-        .map(|id| SharedCategoryCount { id, count: store.lines.iter().filter(|l| l.category == id && l.key != "unbindall").count() })
-        .collect();
-    let clients = PK3_CLIENT_IDS
+fn config_view(app: &tauri::AppHandle, store: &ConfigPresetStore) -> ConfigView {
+    let presets = store
+        .presets
         .iter()
-        .map(|id| {
-            let cfg_path = find_client_cfg(app, id);
-            let changes = cfg_path.as_ref().and_then(|_| read_client_cfgs(app, id).ok()).map(|text| {
-                let current: std::collections::HashMap<String, String> =
-                    extract_shared_lines(&text).into_iter().map(|l| (l.key, l.line)).collect();
-                shared_lines_for(store, id)
-                    .iter()
-                    .filter(|l| l.key != "unbindall" && current.get(&l.key) != Some(&l.line))
-                    .count()
-            });
-            SharedClientInfo { id, cfg_path: cfg_path.map(|p| p.to_string_lossy().to_string()), changes }
+        .map(|p| {
+            let (binds, settings) = preset_counts(p);
+            let mut applied_to: Vec<String> = store.assignments.iter().filter(|(_, pid)| *pid == &p.id).map(|(c, _)| c.clone()).collect();
+            applied_to.sort();
+            ConfigPresetView {
+                id: p.id.clone(),
+                name: p.name.clone(),
+                origin: p.origin.clone(),
+                source_client: p.source_client.clone(),
+                updated: p.updated,
+                controls_only: p.controls_only,
+                binds,
+                settings,
+                applied_to,
+            }
         })
         .collect();
-    // The preview shows a multiplayer client's version - the fuller one.
-    let preview = shared_lines_for(store, TOMMYTERNAL_MOD_ID).iter().map(|l| l.line.clone()).collect();
-    SharedSettingsView {
-        source: store.source.clone(),
-        pulled_at: store.pulled_at,
-        categories: store.categories.clone(),
-        targets: store.targets.clone(),
-        available,
-        clients,
-        preview,
+    let clients = PK3_CLIENT_IDS.iter().map(|id| ConfigClientView { id, has_cfg: find_client_cfg(app, id).is_some() }).collect();
+    ConfigView { presets, clients }
+}
+
+fn find_preset_mut<'a>(store: &'a mut ConfigPresetStore, id: &str) -> Result<&'a mut ConfigPreset, String> {
+    store.presets.iter_mut().find(|p| p.id == id).ok_or_else(|| "That preset no longer exists".to_string())
+}
+
+fn clean_preset_name(name: &str) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("Give the preset a name".to_string());
     }
+    Ok(name.chars().take(60).collect())
 }
 
 #[tauri::command]
-fn get_shared_settings(app: tauri::AppHandle) -> SharedSettingsView {
-    shared_settings_view(&app, &load_shared_settings(&app))
+fn list_config_presets(app: tauri::AppHandle) -> ConfigView {
+    config_view(&app, &load_presets(&app))
 }
 
 #[tauri::command]
-fn pull_shared_settings(app: tauri::AppHandle, source: String) -> Result<SharedSettingsView, String> {
-    if !PK3_CLIENT_IDS.contains(&source.as_str()) {
-        return Err(format!("Unknown client: {source}"));
+fn save_preset_from_client(app: tauri::AppHandle, client_id: String, name: String) -> Result<ConfigView, String> {
+    if !PK3_CLIENT_IDS.contains(&client_id.as_str()) {
+        return Err(format!("Unknown client: {client_id}"));
     }
-    let text = read_client_cfgs(&app, &source)?;
-    let mut store = load_shared_settings(&app);
-    store.lines = extract_shared_lines(&text);
-    store.source = Some(source.clone());
-    store.pulled_at = now_secs();
-    // First pull: share the usual things, to every multiplayer client but
-    // not the source itself (it already has them).
-    if store.categories.is_empty() {
-        store.categories = vec!["controls".into(), "mouse_view".into(), "video".into(), "audio".into()];
+    let lines = preset_lines_from_text(&read_client_cfgs(&app, &client_id)?);
+    let now = now_secs();
+    let mut store = load_presets(&app);
+    store.presets.push(ConfigPreset {
+        id: new_preset_id(),
+        name: clean_preset_name(&name)?,
+        origin: format!("Saved from {client_id}"),
+        source_client: Some(client_id),
+        created: now,
+        updated: now,
+        controls_only: false,
+        lines,
+    });
+    save_presets(&app, &store)?;
+    Ok(config_view(&app, &store))
+}
+
+// A file dialog, so it runs on a worker thread like the other pickers.
+#[tauri::command]
+async fn import_config_preset(app: tauri::AppHandle) -> Result<Option<ConfigView>, String> {
+    let picked = app
+        .dialog()
+        .file()
+        .add_filter("Config file", &["cfg"])
+        .set_title("Choose a .cfg to import as a preset")
+        .blocking_pick_file();
+    let Some(file) = picked else { return Ok(None) };
+    let path = file.into_path().map_err(|e| e.to_string())?;
+    let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let lines = preset_lines_from_text(&text);
+    if lines.is_empty() {
+        return Err("That file has no binds or settings in it".to_string());
     }
-    if store.targets.is_empty() {
-        store.targets = PK3_CLIENT_IDS.iter().map(|s| s.to_string()).filter(|id| id != &source && id != OPENJO_MOD_ID).collect();
-    }
-    save_shared_settings_store(&app, &store)?;
-    Ok(shared_settings_view(&app, &store))
+    let filename = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "config.cfg".to_string());
+    let stem = path.file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "Imported".to_string());
+    let now = now_secs();
+    let mut store = load_presets(&app);
+    store.presets.push(ConfigPreset {
+        id: new_preset_id(),
+        name: clean_preset_name(&stem)?,
+        origin: format!("Imported from {filename}"),
+        source_client: None,
+        created: now,
+        updated: now,
+        controls_only: false,
+        lines,
+    });
+    save_presets(&app, &store)?;
+    Ok(Some(config_view(&app, &store)))
 }
 
 #[tauri::command]
-fn save_shared_settings(app: tauri::AppHandle, categories: Vec<String>, targets: Vec<String>) -> Result<SharedSettingsView, String> {
-    let known_categories: Vec<&str> = std::iter::once(CONTROLS_CATEGORY).chain(SHARED_CATEGORIES.iter().map(|(id, _)| *id)).collect();
-    if let Some(bad) = categories.iter().find(|c| !known_categories.contains(&c.as_str())) {
-        return Err(format!("Unknown category: {bad}"));
+fn update_preset_from_client(app: tauri::AppHandle, id: String) -> Result<ConfigView, String> {
+    let mut store = load_presets(&app);
+    let preset = find_preset_mut(&mut store, &id)?;
+    let client_id = preset.source_client.clone().ok_or_else(|| "This preset was imported from a file, not a client".to_string())?;
+    preset.lines = preset_lines_from_text(&read_client_cfgs(&app, &client_id)?);
+    preset.updated = now_secs();
+    save_presets(&app, &store)?;
+    Ok(config_view(&app, &store))
+}
+
+#[tauri::command]
+fn rename_config_preset(app: tauri::AppHandle, id: String, name: String) -> Result<ConfigView, String> {
+    let mut store = load_presets(&app);
+    find_preset_mut(&mut store, &id)?.name = clean_preset_name(&name)?;
+    save_presets(&app, &store)?;
+    Ok(config_view(&app, &store))
+}
+
+#[tauri::command]
+fn set_preset_controls_only(app: tauri::AppHandle, id: String, controls_only: bool) -> Result<ConfigView, String> {
+    let mut store = load_presets(&app);
+    find_preset_mut(&mut store, &id)?.controls_only = controls_only;
+    save_presets(&app, &store)?;
+    Ok(config_view(&app, &store))
+}
+
+#[tauri::command]
+fn get_preset_text(app: tauri::AppHandle, id: String) -> Result<String, String> {
+    let mut store = load_presets(&app);
+    Ok(find_preset_mut(&mut store, &id)?.lines.join("\n"))
+}
+
+// Edited text goes through the same filter as a saved or imported config,
+// so a stray fs_game line can't be typed in either.
+#[tauri::command]
+fn set_preset_text(app: tauri::AppHandle, id: String, text: String) -> Result<ConfigView, String> {
+    let lines = preset_lines_from_text(&text);
+    if lines.is_empty() {
+        return Err("A preset needs at least one bind or setting".to_string());
     }
-    if let Some(bad) = targets.iter().find(|t| !PK3_CLIENT_IDS.contains(&t.as_str())) {
+    let mut store = load_presets(&app);
+    let preset = find_preset_mut(&mut store, &id)?;
+    preset.lines = lines;
+    preset.updated = now_secs();
+    save_presets(&app, &store)?;
+    Ok(config_view(&app, &store))
+}
+
+#[tauri::command]
+fn delete_config_preset(app: tauri::AppHandle, id: String) -> Result<ConfigView, String> {
+    let mut store = load_presets(&app);
+    store.presets.retain(|p| p.id != id);
+    store.assignments.retain(|_, pid| *pid != id);
+    save_presets(&app, &store)?;
+    // Clients that used it lose their launcher_shared.cfg straight away.
+    for client in PK3_CLIENT_IDS {
+        let _ = write_shared_cfg(&app, &store, client);
+    }
+    Ok(config_view(&app, &store))
+}
+
+// Sets exactly which clients use this preset. A client uses one preset at
+// a time, so naming it here takes it off whichever preset had it.
+#[tauri::command]
+fn assign_config_preset(app: tauri::AppHandle, id: String, clients: Vec<String>) -> Result<ConfigView, String> {
+    if let Some(bad) = clients.iter().find(|c| !PK3_CLIENT_IDS.contains(&c.as_str())) {
         return Err(format!("Unknown client: {bad}"));
     }
-    let mut store = load_shared_settings(&app);
-    store.categories = categories;
-    store.targets = targets;
-    save_shared_settings_store(&app, &store)?;
-    Ok(shared_settings_view(&app, &store))
-}
-
-// Writes every client's copy right now - for anyone who launches a client
-// without the launcher and runs `exec launcher_shared.cfg` themselves.
-// Launches from here rewrite it anyway (see shared_settings_args).
-#[tauri::command]
-fn apply_shared_settings(app: tauri::AppHandle) -> Result<String, String> {
-    let store = load_shared_settings(&app);
-    let mut clients = 0;
-    for id in PK3_CLIENT_IDS {
-        if write_shared_cfg(&app, &store, id)? > 0 {
-            clients += 1;
-        }
+    let mut store = load_presets(&app);
+    find_preset_mut(&mut store, &id)?;
+    store.assignments.retain(|_, pid| *pid != id);
+    for client in &clients {
+        store.assignments.insert(client.clone(), id.clone());
     }
-    Ok(match clients {
-        0 => "Nothing to write - pick a source and at least one client".to_string(),
-        1 => "Written for 1 client".to_string(),
-        n => format!("Written for {n} clients"),
-    })
+    save_presets(&app, &store)?;
+    for client in PK3_CLIENT_IDS {
+        let _ = write_shared_cfg(&app, &store, client);
+    }
+    Ok(config_view(&app, &store))
 }
 
 // --- Media: screenshots and demos -------------------------------------------
@@ -2735,10 +2844,16 @@ pub fn run() {
             trash_media,
             rename_demo,
             play_demo,
-            get_shared_settings,
-            pull_shared_settings,
-            save_shared_settings,
-            apply_shared_settings,
+            list_config_presets,
+            save_preset_from_client,
+            import_config_preset,
+            update_preset_from_client,
+            rename_config_preset,
+            set_preset_controls_only,
+            get_preset_text,
+            set_preset_text,
+            delete_config_preset,
+            assign_config_preset,
             query_server_status
         ])
         .run(tauri::generate_context!())

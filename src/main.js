@@ -1413,29 +1413,22 @@ function renderModsView(mainEl) {
   `;
 }
 
-// --- Config: shared settings across clients --------------------------------
-// The Rust side owns the data (shared_settings.json) and does the reading
-// and writing; this is the page over it.
+// --- Config: named presets of binds and settings, applied per client -------
+// The Rust side owns the data (config_presets.json) and does the reading
+// and writing; this is the list over it. Every command hands back the whole
+// view, so each action is: call, store the result, re-render.
 
-let sharedSettings = null; // view from get_shared_settings, or null while loading
-let sharedSettingsError = null;
+let configView = null; // from list_config_presets, or null while loading
+let configError = null;
 let configStatus = "";
 
-const SHARED_CATEGORY_LABELS = {
-  controls: { title: "Controls", detail: "every key and mouse bind", unit: "binds" },
-  mouse_view: { title: "Mouse and view", detail: "sensitivity, FOV, yaw speed, free look", unit: "settings" },
-  video: { title: "Video", detail: "resolution, fullscreen, vsync, texture quality, FPS cap", unit: "settings" },
-  audio: { title: "Audio", detail: "volume, music, sound system", unit: "settings" },
-  player: { title: "Player", detail: "name, model, saber colours", unit: "settings" },
-};
-
-async function loadSharedSettings() {
+async function loadConfigPresets() {
   try {
     const { invoke } = window.__TAURI__.core;
-    sharedSettings = await invoke("get_shared_settings");
-    sharedSettingsError = null;
+    configView = await invoke("list_config_presets");
+    configError = null;
   } catch (err) {
-    sharedSettingsError = String(err);
+    configError = String(err);
   }
   if (selected === "__config__") renderMainPreservingScroll();
 }
@@ -1446,13 +1439,17 @@ function setConfigStatus(message) {
   if (el) el.textContent = message;
 }
 
-async function pullSharedSettings() {
-  const source = document.getElementById("config-source")?.value;
-  if (!source) return;
-  setConfigStatus("Reading...");
+async function configAction(command, args, busyMessage = "") {
+  if (busyMessage) setConfigStatus(busyMessage);
   try {
     const { invoke } = window.__TAURI__.core;
-    sharedSettings = await invoke("pull_shared_settings", { source });
+    const result = await invoke(command, args);
+    if (result === null) {
+      // A cancelled file dialog.
+      setConfigStatus("");
+      return;
+    }
+    configView = result;
     configStatus = "";
     renderMainPreservingScroll();
   } catch (err) {
@@ -1460,112 +1457,236 @@ async function pullSharedSettings() {
   }
 }
 
-async function saveSharedSettingsChoices() {
-  const categories = [...document.querySelectorAll("input[data-config-category]:checked")].map((el) => el.dataset.configCategory);
-  const targets = [...document.querySelectorAll("input[data-config-target]:checked")].map((el) => el.dataset.configTarget);
+// A small one-field dialog, same shell as the others. `submit` runs on
+// Save and throws to keep the dialog open with its message shown.
+function showTextDialog({ title, label, value, confirmLabel = "Save", multiline = false, submit }) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "confirm-overlay";
+    overlay.innerHTML = `
+      <div class="confirm-dialog ${multiline ? "confirm-dialog--editor" : "confirm-dialog--wide"}">
+        <h3 class="confirm-title">${title}</h3>
+        <label class="pinned-edit-field">
+          <span>${label}</span>
+          ${multiline
+            ? `<textarea class="dialog-textarea" spellcheck="false">${escapeHtml(value)}</textarea>`
+            : `<input type="text" class="dialog-input" value="${escapeHtml(value)}" spellcheck="false" autocomplete="off">`}
+        </label>
+        <p class="dialog-error"></p>
+        <div class="confirm-actions">
+          <button class="confirm-cancel-btn">Cancel</button>
+          <button class="confirm-ok-btn">${confirmLabel}</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const field = overlay.querySelector(".dialog-input, .dialog-textarea");
+    const errorEl = overlay.querySelector(".dialog-error");
+    field.focus();
+    if (!multiline) field.select();
+
+    function finish(result) {
+      overlay.remove();
+      resolve(result);
+    }
+    async function save() {
+      try {
+        finish(await submit(field.value));
+      } catch (err) {
+        errorEl.textContent = String(err);
+      }
+    }
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay) finish(null);
+    });
+    field.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !multiline) save();
+      if (e.key === "Escape") finish(null);
+    });
+    overlay.querySelector(".confirm-cancel-btn").addEventListener("click", () => finish(null));
+    overlay.querySelector(".confirm-ok-btn").addEventListener("click", save);
+  });
+}
+
+async function savePresetFromClient(clientId) {
+  const { invoke } = window.__TAURI__.core;
+  const view = await showTextDialog({
+    title: `Save from ${clientLabel(clientId)}`,
+    label: "Preset name",
+    value: `${clientLabel(clientId)} settings`,
+    submit: (name) => invoke("save_preset_from_client", { clientId, name }),
+  });
+  if (!view) return;
+  configView = view;
+  renderMainPreservingScroll();
+}
+
+async function renameConfigPreset(id) {
+  const preset = configView.presets.find((p) => p.id === id);
+  if (!preset) return;
+  const { invoke } = window.__TAURI__.core;
+  const view = await showTextDialog({
+    title: "Rename preset",
+    label: "Name",
+    value: preset.name,
+    submit: (name) => invoke("rename_config_preset", { id, name }),
+  });
+  if (!view) return;
+  configView = view;
+  renderMainPreservingScroll();
+}
+
+async function editConfigPreset(id) {
+  const preset = configView.presets.find((p) => p.id === id);
+  if (!preset) return;
+  const { invoke } = window.__TAURI__.core;
+  let text;
   try {
-    const { invoke } = window.__TAURI__.core;
-    sharedSettings = await invoke("save_shared_settings", { categories, targets });
-    renderMainPreservingScroll();
+    text = await invoke("get_preset_text", { id });
   } catch (err) {
     setConfigStatus(`Error: ${err}`);
+    return;
   }
+  const view = await showTextDialog({
+    title: `Edit ${preset.name}`,
+    label: "One bind or setting per line. Anything else is dropped on save.",
+    value: text,
+    multiline: true,
+    submit: (edited) => invoke("set_preset_text", { id, text: edited }),
+  });
+  if (!view) return;
+  configView = view;
+  renderMainPreservingScroll();
 }
 
-async function applySharedSettings() {
-  setConfigStatus("Writing...");
-  try {
-    const { invoke } = window.__TAURI__.core;
-    setConfigStatus(await invoke("apply_shared_settings"));
-  } catch (err) {
-    setConfigStatus(`Error: ${err}`);
-  }
+async function deleteConfigPreset(id) {
+  const preset = configView.presets.find((p) => p.id === id);
+  if (!preset) return;
+  const used = preset.applied_to.length;
+  const confirmed = await showConfirmDialog({
+    title: "Delete preset?",
+    message: `${escapeHtml(preset.name)} will be deleted.${used ? ` The ${used === 1 ? "client" : `${used} clients`} using it will go back to ${used === 1 ? "its" : "their"} own settings.` : ""}`,
+    confirmLabel: "Delete",
+    danger: true,
+  });
+  if (!confirmed) return;
+  configAction("delete_config_preset", { id });
 }
 
-function sharedCategoryRowHtml(cat) {
-  const label = SHARED_CATEGORY_LABELS[cat.id];
-  const on = sharedSettings.categories.includes(cat.id);
-  const pulled = !!sharedSettings.source;
-  const count = !pulled ? "" : cat.count ? `${cat.count} ${label.unit}` : "none in source";
-  return `
-    <label class="config-row ${on ? "on" : ""} ${pulled ? "" : "config-row--muted"}">
-      <input type="checkbox" data-config-category="${cat.id}" ${on ? "checked" : ""} ${pulled ? "" : "disabled"}>
-      <span class="config-row-main">
-        <span class="config-row-title">${label.title}</span>
-        <span class="config-row-detail">${label.detail}</span>
-      </span>
-      <span class="config-row-count">${count}</span>
-    </label>`;
-}
-
-function sharedTargetRowHtml(client) {
-  const on = sharedSettings.targets.includes(client.id);
-  const isSource = sharedSettings.source === client.id;
-  let status;
-  if (isSource) {
-    status = "source";
-  } else if (client.id === "openjo") {
-    status = "campaign - controls only";
-  } else if (!client.cfg_path) {
-    status = "not run yet";
-  } else if (!sharedSettings.source) {
-    status = "";
+// A chip toggled on a preset's row: "all" means every client; a client
+// chip adds or removes just that one.
+function togglePresetClient(id, target, checked) {
+  const preset = configView.presets.find((p) => p.id === id);
+  if (!preset) return;
+  let clients;
+  if (target === "all") {
+    clients = checked ? pk3TargetClients().map((c) => c.id) : [];
   } else {
-    status = client.changes === 0 ? "already matches" : `${client.changes} line${client.changes === 1 ? "" : "s"} will change`;
+    clients = preset.applied_to.filter((c) => c !== target);
+    if (checked) clients.push(target);
   }
+  configAction("assign_config_preset", { id, clients });
+}
+
+function presetCardHtml(preset) {
+  const clients = pk3TargetClients();
+  const all = clients.every((c) => preset.applied_to.includes(c.id));
+  const chips = [
+    `<label class="pk3-target"><input type="checkbox" data-preset-client="${preset.id}" data-target="all" ${all ? "checked" : ""}> All Clients</label>`,
+    ...clients.map((c) => {
+      const on = preset.applied_to.includes(c.id);
+      return `<label class="pk3-target"><input type="checkbox" data-preset-client="${preset.id}" data-target="${c.id}" ${all ? "disabled" : ""} ${on ? "checked" : ""}> ${escapeHtml(clientLabel(c.id))}</label>`;
+    }),
+  ].join("");
+  const counts = preset.controls_only
+    ? `${preset.binds} binds`
+    : `${preset.binds} binds, ${preset.settings} settings`;
+  const origin = preset.source_client ? `Saved from ${escapeHtml(clientLabel(preset.source_client))}` : escapeHtml(preset.origin);
   return `
-    <label class="config-row ${on && !isSource ? "on" : ""}">
-      <input type="checkbox" data-config-target="${client.id}" ${on ? "checked" : ""} ${isSource ? "disabled" : ""}>
-      <span class="config-row-main">
-        <span class="config-row-title">${escapeHtml(clientLabel(client.id))}</span>
-        <span class="config-row-detail">${escapeHtml(status)}</span>
-      </span>
-      <span class="config-row-count">${on && !isSource ? "on" : isSource ? "" : "off"}</span>
-    </label>`;
+    <div class="preset-card">
+      <div class="preset-head">
+        <div class="preset-info">
+          <p class="preset-name">${escapeHtml(preset.name)}</p>
+          <p class="preset-meta">${origin} &middot; ${formatMediaDate(preset.updated)} &middot; ${counts}</p>
+        </div>
+        <div class="preset-actions">
+          <label class="pk3-target preset-scope" title="Only the binds, for a client whose other settings shouldn't change"><input type="checkbox" data-preset-controls-only="${preset.id}" ${preset.controls_only ? "checked" : ""}> Controls only</label>
+          ${preset.source_client ? `<button class="change-folder" data-preset-update="${preset.id}">Update</button>` : ""}
+          <button class="change-folder" data-preset-rename="${preset.id}">Rename</button>
+          <button class="change-folder" data-preset-edit="${preset.id}">Edit</button>
+          <button class="pk3-remove-btn" data-preset-delete="${preset.id}">Delete</button>
+        </div>
+      </div>
+      <div class="preset-chips"><span class="preset-chips-label">Applied to</span>${chips}</div>
+    </div>`;
 }
 
 function renderConfigView(mainEl) {
   const header = `<div class="detail-header"><h2>Config</h2></div>
-    <p class="detail-description">Keep the same controls and settings in every client. Pick one client to take them from; the others get them the next time they're launched from here. Your clients' own config files are never edited.</p>`;
-  if (sharedSettingsError) {
-    mainEl.innerHTML = `${header}<p class="detail-status">Couldn't load shared settings: ${escapeHtml(sharedSettingsError)}</p>`;
+    <p class="detail-description">Save a client's binds and settings as a preset, or import a .cfg, then apply it to any client. Presets apply when a client is launched from here. Your clients' own config files are never edited.</p>`;
+  if (configError) {
+    mainEl.innerHTML = `${header}<p class="detail-status">Couldn't load presets: ${escapeHtml(configError)}</p>`;
     return;
   }
-  if (sharedSettings === null) {
+  if (configView === null) {
     mainEl.innerHTML = `${header}<p class="detail-status">Loading...</p>`;
-    loadSharedSettings();
+    loadConfigPresets();
     return;
   }
 
-  const withCfg = sharedSettings.clients.filter((c) => c.cfg_path && c.id !== "openjo");
-  const sourceOptions = withCfg.length
-    ? withCfg.map((c) => `<option value="${c.id}" ${c.id === sharedSettings.source ? "selected" : ""}>${escapeHtml(clientLabel(c.id))}</option>`).join("")
-    : `<option value="">No client has saved a config yet</option>`;
-  const pulledAt = sharedSettings.pulled_at ? `Last pulled ${formatMediaDate(sharedSettings.pulled_at)}` : "Not pulled yet";
-  const previewLines = sharedSettings.preview;
-  const previewHtml = previewLines.length
-    ? `<pre class="config-preview">${escapeHtml(previewLines.slice(0, 14).join("\n"))}${previewLines.length > 14 ? `\n… ${previewLines.length - 14} more lines` : ""}</pre>`
-    : "";
+  const sources = configView.clients.filter((c) => c.has_cfg && modSupportedOnCurrentPlatform(PK3_CLIENTS.find((p) => p.id === c.id)?.name));
+  const saveFromHtml = sources.length
+    ? sources.map((c) => `<button class="change-folder" data-preset-save-from="${c.id}">${escapeHtml(clientLabel(c.id))}</button>`).join("")
+    : `<span class="detail-status">No client has saved a config yet - run one first.</span>`;
+  const listHtml = configView.presets.length
+    ? configView.presets.map(presetCardHtml).join("")
+    : `<p class="detail-status">No presets yet.</p>`;
 
   mainEl.innerHTML = `
     ${header}
-    <p class="home-feed-label">Take settings from</p>
-    <div class="config-source-row">
-      <select id="config-source" class="server-client-select" ${withCfg.length ? "" : "disabled"}>${sourceOptions}</select>
-      <button class="change-folder" id="config-pull-btn" ${withCfg.length ? "" : "disabled"}>Pull now</button>
-      <span class="detail-status">${pulledAt}</span>
+    <div class="preset-toolbar">
+      <span class="preset-toolbar-label">Save from</span>
+      ${saveFromHtml}
+      <span class="preset-toolbar-sep"></span>
+      <button class="change-folder" id="preset-import-btn">Import .cfg...</button>
     </div>
-    <p class="home-feed-label">What to share</p>
-    <div class="config-list">${sharedSettings.available.map(sharedCategoryRowHtml).join("")}</div>
-    <p class="home-feed-label">Applies to</p>
-    <div class="config-list">${sharedSettings.clients.map(sharedTargetRowHtml).join("")}</div>
-    ${previewHtml}
-    <div class="config-apply-row">
-      <button class="change-folder" id="config-apply-btn" ${sharedSettings.source ? "" : "disabled"}>Write now</button>
-      <span class="detail-status" id="config-status">${escapeHtml(configStatus)}</span>
-    </div>
-    <p class="detail-status">Launching a client from here always writes the current shared settings first. "Write now" is for clients you start some other way - run <code>exec launcher_shared.cfg</code> in their console.</p>
+    <p class="detail-status" id="config-status">${escapeHtml(configStatus)}</p>
+    <div class="preset-list">${listHtml}</div>
+    <p class="detail-status preset-note">A client uses one preset at a time; applying one takes it off whichever preset had it. Launching from here always writes the preset first. For a client you start some other way, run <code>exec launcher_shared.cfg</code> in its console.</p>
   `;
+}
+
+// Returns true when the click belonged to the Config page.
+function handleConfigClick(e) {
+  const saveBtn = e.target.closest("[data-preset-save-from]");
+  if (saveBtn) {
+    savePresetFromClient(saveBtn.dataset.presetSaveFrom);
+    return true;
+  }
+  if (e.target.closest("#preset-import-btn")) {
+    configAction("import_config_preset", {}, "Choose a file...");
+    return true;
+  }
+  const updateBtn = e.target.closest("[data-preset-update]");
+  if (updateBtn) {
+    configAction("update_preset_from_client", { id: updateBtn.dataset.presetUpdate }, "Reading...");
+    return true;
+  }
+  const renameBtn = e.target.closest("[data-preset-rename]");
+  if (renameBtn) {
+    renameConfigPreset(renameBtn.dataset.presetRename);
+    return true;
+  }
+  const editBtn = e.target.closest("[data-preset-edit]");
+  if (editBtn) {
+    editConfigPreset(editBtn.dataset.presetEdit);
+    return true;
+  }
+  const deleteBtn = e.target.closest("[data-preset-delete]");
+  if (deleteBtn) {
+    deleteConfigPreset(deleteBtn.dataset.presetDelete);
+    return true;
+  }
+  return false;
 }
 
 // --- Media: screenshots and demos from every client ---------------------------
@@ -2577,8 +2698,8 @@ document.getElementById("home-nav-row").addEventListener("click", () => selectCl
 document.getElementById("ctf-nav-row").addEventListener("click", () => selectClient("__ctf__"));
 document.getElementById("mods-nav-row").addEventListener("click", () => selectClient("__mods__"));
 document.getElementById("config-nav-row").addEventListener("click", () => {
-  sharedSettings = null; // fresh look at the configs each visit
-  sharedSettingsError = null;
+  configView = null; // fresh look at the configs each visit
+  configError = null;
   selectClient("__config__");
 });
 document.getElementById("media-nav-row").addEventListener("click", () => {
@@ -2612,14 +2733,7 @@ document.getElementById("main").addEventListener("click", (e) => {
     return;
   }
   if (handleMediaClick(e)) return;
-  if (e.target.closest("#config-pull-btn")) {
-    pullSharedSettings();
-    return;
-  }
-  if (e.target.closest("#config-apply-btn")) {
-    applySharedSettings();
-    return;
-  }
+  if (handleConfigClick(e)) return;
   const useSuggestedBtn = e.target.closest("button[data-use-suggested-folder]");
   if (useSuggestedBtn) {
     useSuggestedFolder(useSuggestedBtn.dataset.useSuggestedFolder, useSuggestedBtn.dataset.suggestedPath);
@@ -2750,8 +2864,14 @@ document.getElementById("main").addEventListener("dblclick", (e) => {
 });
 
 document.getElementById("main").addEventListener("change", (e) => {
-  if (e.target.closest("input[data-config-category], input[data-config-target]")) {
-    saveSharedSettingsChoices();
+  const chip = e.target.closest("input[data-preset-client]");
+  if (chip) {
+    togglePresetClient(chip.dataset.presetClient, chip.dataset.target, chip.checked);
+    return;
+  }
+  const scope = e.target.closest("input[data-preset-controls-only]");
+  if (scope) {
+    configAction("set_preset_controls_only", { id: scope.dataset.presetControlsOnly, controlsOnly: scope.checked });
     return;
   }
   const cb = e.target.closest('input[type="checkbox"][data-target]');

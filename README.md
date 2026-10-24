@@ -6,8 +6,9 @@ NWH (Capture the Flag), Tommyternal (Defrag), JK2MV (FFA), and OpenJO
 (Campaign) — without manually copying game assets around. Home has a one-click
 Play for each mode. It also manages custom PK3 mods per client, browses the
 [Monolith](https://github.com/fl4te/monolith) community mod database, gathers
-every client's screenshots and demos in one place, and shows JK2 CTF player
-stats and activity on its CTF page.
+every client's screenshots and demos in one place, keeps config presets (a
+client's binds and settings, or an imported .cfg) that can be applied to any
+client at launch, and shows JK2 CTF player stats and activity on its CTF page.
 
 **Platform status**: macOS is fully supported and well-tested (install/
 update/launch for all three clients, PK3 mod management, auto-updates).
