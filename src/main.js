@@ -534,8 +534,8 @@ function renderSidebar() {
       const classes = ["client-row", mod.name === selected ? "active" : "", status.installed ? "installed" : "", status.checking ? "checking" : ""]
         .filter(Boolean)
         .join(" ");
-      return `<div class="${classes}" data-name="${mod.name}" title="${status.title}">
-        <span class="client-row-name">${mod.displayName ?? mod.name}</span>
+      return `<div class="${classes}" data-name="${escapeHtml(mod.name)}" title="${status.title}">
+        <span class="client-row-name">${escapeHtml(mod.displayName ?? mod.name)}</span>
         ${status.tag ? `<span class="client-row-status ${status.tag === "update" ? "client-row-status--update" : ""}">${status.tag}</span>` : ""}
         <span class="client-dot" aria-hidden="true"></span>
       </div>`;
@@ -626,15 +626,15 @@ function feedRowHtml(item) {
   let sub = "";
   let accent = "var(--primary)";
   if (item.type === "match") {
-    text = `<b>Match #${item.ordinal}</b> logged &mdash; <span style="color: var(--team-red)">Red ${item.redScore}</span> : <span style="color: var(--team-blue)">${item.blueScore} Blue</span>`;
-    sub = `${item.playerCount} players`;
+    text = `<b>Match #${escapeHtml(item.ordinal)}</b> logged &mdash; <span style="color: var(--team-red)">Red ${escapeHtml(item.redScore)}</span> : <span style="color: var(--team-blue)">${escapeHtml(item.blueScore)} Blue</span>`;
+    sub = `${escapeHtml(item.playerCount)} players`;
   } else if (item.type === "crest") {
     accent = RARITY_COLORS[item.entry.rarity] ?? "var(--primary)";
-    text = `<b>${item.entry.playerName}</b> earned <span style="color: ${accent}">${item.entry.title}</span>`;
-    sub = item.entry.rarity ?? "";
+    text = `<b>${escapeHtml(item.entry.playerName)}</b> earned <span style="color: ${accent}">${escapeHtml(item.entry.title)}</span>`;
+    sub = escapeHtml(item.entry.rarity ?? "");
   } else {
-    text = `New demo: <b>${item.title}</b>${item.uploaderName ? ` by ${item.uploaderName}` : ""}`;
-    sub = item.gametype ?? "";
+    text = `New demo: <b>${escapeHtml(item.title)}</b>${item.uploaderName ? ` by ${escapeHtml(item.uploaderName)}` : ""}`;
+    sub = escapeHtml(item.gametype ?? "");
   }
   return `<div class="feed-row" style="--feed-accent: ${accent}">
     <span class="feed-row-icon">${FEED_ICONS[item.type] ?? ""}</span>
@@ -682,13 +682,14 @@ async function loadRecentVideos() {
 }
 
 function recentVideoCardHtml(video) {
-  const thumb = `https://img.youtube.com/vi/${video.videoId}/hqdefault.jpg`;
-  const url = `https://www.youtube.com/watch?v=${video.videoId}`;
+  const id = encodeURIComponent(video.videoId ?? "");
+  const thumb = `https://img.youtube.com/vi/${id}/hqdefault.jpg`;
+  const url = `https://www.youtube.com/watch?v=${id}`;
   return `
     <a class="highlight-card" href="${url}" target="_blank" rel="noopener">
       <img src="${thumb}" alt="">
       <span class="highlight-card-play">&#9654;</span>
-      <span class="highlight-card-label">${video.title || "Watch"}</span>
+      <span class="highlight-card-label">${escapeHtml(video.title || "Watch")}</span>
     </a>
   `;
 }
@@ -726,7 +727,7 @@ function modeMetaText(mode, client) {
   if (modeMessages[mode.id]) return modeMessages[mode.id];
   if (modeChecking(mode)) return "Checking...";
   if (!client) return `Not available on ${currentPlatform === "macos" ? "macOS" : currentPlatform}`;
-  if (!modState[client]?.installed) return `${clientDisplayName(client)} isn't installed yet`;
+  if (!modState[client]?.installed) return `${escapeHtml(clientDisplayName(client))} isn't installed yet`;
   let text;
   if (mode.singlePlayer) {
     text = "Single-player";
@@ -768,7 +769,7 @@ function modeBannerHtml(mode) {
     : `<button class="mode-gear-btn" data-mode-server="${mode.id}" title="Choose a server" aria-label="Choose a server for ${mode.title}">⚙</button>`;
   return `
     <div class="mode-banner">
-      <img class="mode-banner-img" src="assets/banners/${mode.client.toLowerCase()}.jpg" alt="" onerror="this.remove()">
+      <img class="mode-banner-img" src="assets/banners/${mode.client.toLowerCase()}.jpg" alt="" data-on-error="remove">
       <div class="mode-banner-text">
         <h3 class="mode-banner-title">${mode.title}</h3>
         <p class="mode-banner-meta">${modeMetaText(mode, client)}</p>
@@ -884,29 +885,29 @@ function favoriteServerRowHtml(address) {
     return `
       <div class="favorite-row">
         <span class="favorite-play-btn favorite-play-btn--disabled">Offline</span>
-        <span class="favorite-row-name">${address}</span>
+        <span class="favorite-row-name">${escapeHtml(address)}</span>
         <span class="favorite-row-meta">Unreachable right now</span>
-        <button class="server-favorite-btn active" data-address="${address}" title="Remove favorite">★</button>
+        <button class="server-favorite-btn active" data-address="${escapeHtml(address)}" title="Remove favorite">★</button>
       </div>`;
   }
   const installedJoinable = JOINABLE_CLIENTS.filter((name) => modState[name]?.installed);
-  const nameHtml = `<span class="favorite-row-name">${stripQuakeColors(data.hostname)}</span>`;
+  const nameHtml = `<span class="favorite-row-name">${serverText(data.hostname)}</span>`;
   let playHtml;
   let selectHtml = "";
   if (installedJoinable.length === 0) {
     playHtml = `<span class="favorite-play-btn favorite-play-btn--disabled">Install a client</span>`;
   } else if (installedJoinable.length === 1) {
-    playHtml = `<button class="favorite-play-btn server-join-btn" data-address="${address}" data-client="${installedJoinable[0]}">Play</button>`;
+    playHtml = `<button class="favorite-play-btn server-join-btn" data-address="${escapeHtml(address)}" data-client="${installedJoinable[0]}">Play</button>`;
   } else {
     // More than one option installed - let them pick, same control as the
     // Servers page, instead of silently guessing which one they meant. The
     // select sits after the server name (not next to the button) so the
     // server you're looking at reads first; .closest(".favorite-row") in
     // the click handler still finds it regardless of where it sits in the row.
-    playHtml = `<button class="favorite-play-btn server-join-btn" data-address="${address}">Play</button>`;
+    playHtml = `<button class="favorite-play-btn server-join-btn" data-address="${escapeHtml(address)}">Play</button>`;
     selectHtml = `
       <select class="server-client-select">
-        ${installedJoinable.map((name) => `<option value="${name}">${mods.find((m) => m.name === name)?.displayName ?? name}</option>`).join("")}
+        ${installedJoinable.map((name) => `<option value="${name}">${escapeHtml(clientDisplayName(name))}</option>`).join("")}
       </select>`;
   }
   return `
@@ -914,9 +915,9 @@ function favoriteServerRowHtml(address) {
       ${playHtml}
       ${nameHtml}
       ${selectHtml}
-      <span class="favorite-row-meta">${data.map} &middot; ${data.players.length}/${data.max_clients} players</span>
-      <button class="server-favorite-btn active" data-address="${address}" title="Remove favorite">★</button>
-      ${serverJoinMessage[address] ? `<p class="detail-status">${serverJoinMessage[address]}</p>` : ""}
+      <span class="favorite-row-meta">${escapeHtml(data.map)} &middot; ${escapeHtml(data.players.length)}/${escapeHtml(data.max_clients)} players</span>
+      <button class="server-favorite-btn active" data-address="${escapeHtml(address)}" title="Remove favorite">★</button>
+      ${serverJoinMessage[address] ? `<p class="detail-status">${escapeHtml(serverJoinMessage[address])}</p>` : ""}
     </div>`;
 }
 
@@ -928,7 +929,7 @@ function favoriteServerBlocksHtml() {
 
 function renderHomeView(mainEl) {
   const welcome = session
-    ? `<div class="home-welcome"><h2>Welcome back, ${session.name}</h2></div>`
+    ? `<div class="home-welcome"><h2>Welcome back, ${escapeHtml(session.name)}</h2></div>`
     : `<div class="home-welcome"><h2>Welcome to JK2 Launcher</h2></div>`;
   mainEl.innerHTML = `
     ${welcome}
@@ -956,7 +957,7 @@ function renderCtfView(mainEl) {
 
   let feedHtml;
   if (activityFeedError) {
-    feedHtml = `<p class="detail-status">Couldn't load activity: ${activityFeedError}</p>`;
+    feedHtml = `<p class="detail-status">Couldn't load activity: ${escapeHtml(activityFeedError)}</p>`;
   } else if (!activityFeed) {
     feedHtml = `<p class="detail-status">Loading...</p>`;
     loadActivityFeed();
@@ -1038,12 +1039,12 @@ function serverRowHtml(data) {
       ? `Up to ${MAX_FAVORITE_SERVERS} favorites - remove one first`
       : "Set as favorite";
   const summaryHtml = `
-    <div class="server-row-summary" data-address="${data.address}">
-      <button class="server-favorite-btn ${isFavorite ? "active" : ""}" data-address="${data.address}" title="${favoriteTitle}" ${atFavoriteLimit ? "disabled" : ""}>${isFavorite ? "★" : "☆"}</button>
-      <span class="server-row-name">${stripQuakeColors(data.hostname)}</span>
-      <span class="server-row-map">${data.map}</span>
-      <span class="server-row-players">${data.players.length}/${data.max_clients}</span>
-      <span class="server-row-ping">${data.ping_ms}ms</span>
+    <div class="server-row-summary" data-address="${escapeHtml(data.address)}">
+      <button class="server-favorite-btn ${isFavorite ? "active" : ""}" data-address="${escapeHtml(data.address)}" title="${favoriteTitle}" ${atFavoriteLimit ? "disabled" : ""}>${isFavorite ? "★" : "☆"}</button>
+      <span class="server-row-name">${serverText(data.hostname)}</span>
+      <span class="server-row-map">${escapeHtml(data.map)}</span>
+      <span class="server-row-players">${escapeHtml(data.players.length)}/${escapeHtml(data.max_clients)}</span>
+      <span class="server-row-ping">${escapeHtml(data.ping_ms)}ms</span>
       <span class="server-row-caret">${isExpanded ? "▾" : "▸"}</span>
     </div>`;
   if (!isExpanded) {
@@ -1055,23 +1056,23 @@ function serverRowHtml(data) {
       ? `<p class="detail-status">Install Tommyternal or JK2MV to join this server.</p>`
       : `<div class="server-join">
           <select class="server-client-select">
-            ${installedJoinable.map((name) => `<option value="${name}">${mods.find((m) => m.name === name)?.displayName ?? name}</option>`).join("")}
+            ${installedJoinable.map((name) => `<option value="${name}">${escapeHtml(clientDisplayName(name))}</option>`).join("")}
           </select>
-          <button class="server-join-btn" data-address="${data.address}">Join</button>
+          <button class="server-join-btn" data-address="${escapeHtml(data.address)}">Join</button>
         </div>`;
   const playerRows = data.players.length
     ? data.players
-        .map((p) => `<li><span>${stripQuakeColors(p.name)}</span><span class="server-player-score">${p.score}</span></li>`)
+        .map((p) => `<li><span>${serverText(p.name)}</span><span class="server-player-score">${escapeHtml(p.score)}</span></li>`)
         .join("")
     : `<li class="server-empty">No players connected</li>`;
   return `
     <div class="server-row expanded">
       ${summaryHtml}
       <div class="server-row-details">
-        <p class="server-meta">${data.address}</p>
+        <p class="server-meta">${escapeHtml(data.address)}</p>
         <ul class="server-player-list">${playerRows}</ul>
         ${joinHtml}
-        <p class="detail-status">${serverJoinMessage[data.address] ?? ""}</p>
+        <p class="detail-status">${escapeHtml(serverJoinMessage[data.address] ?? "")}</p>
       </div>
     </div>`;
 }
@@ -1221,16 +1222,17 @@ async function removePk3Mod(filename) {
 
 function pk3RowHtml(mod) {
   const isAll = mod.targets.includes("all");
-  const allCheckbox = `<label class="pk3-target"><input type="checkbox" data-filename="${mod.filename}" data-target="all" ${isAll ? "checked" : ""}> All Clients</label>`;
+  const filename = escapeHtml(mod.filename);
+  const allCheckbox = `<label class="pk3-target"><input type="checkbox" data-filename="${filename}" data-target="all" ${isAll ? "checked" : ""}> All Clients</label>`;
   const clientCheckboxes = pk3TargetClients().map((c) => {
     const checked = !isAll && mod.targets.includes(c.id);
-    return `<label class="pk3-target"><input type="checkbox" data-filename="${mod.filename}" data-target="${c.id}" ${isAll ? "disabled" : ""} ${checked ? "checked" : ""}> ${c.label}</label>`;
+    return `<label class="pk3-target"><input type="checkbox" data-filename="${filename}" data-target="${c.id}" ${isAll ? "disabled" : ""} ${checked ? "checked" : ""}> ${c.label}</label>`;
   }).join("");
   return `
     <div class="pk3-row">
-      <span class="pk3-name">${mod.filename}</span>
+      <span class="pk3-name">${filename}</span>
       <div class="pk3-targets">${allCheckbox}${clientCheckboxes}</div>
-      <button class="pk3-remove-btn" data-filename="${mod.filename}">Remove</button>
+      <button class="pk3-remove-btn" data-filename="${filename}">Remove</button>
     </div>
   `;
 }
@@ -1282,16 +1284,16 @@ async function downloadMonolithMod(url, filename, btn) {
 function monolithCardHtml(mod) {
   const filename = mod.download_url.split("/").pop();
   const thumb = mod.preview_image
-    ? `<img class="monolith-thumb" src="${mod.preview_image}" alt="" onerror="this.style.visibility='hidden'">`
+    ? `<img class="monolith-thumb" src="${safeHttpUrl(mod.preview_image)}" alt="" data-on-error="hide">`
     : `<div class="monolith-thumb monolith-thumb-empty"></div>`;
   return `
     <div class="monolith-card">
       ${thumb}
       <div class="monolith-info">
-        <p class="monolith-name">${mod.name}</p>
-        <p class="monolith-meta">${mod.author || "Unknown"} &middot; ${mod.category || "&mdash;"} &middot; ${mod.size || ""}</p>
+        <p class="monolith-name">${escapeHtml(mod.name)}</p>
+        <p class="monolith-meta">${escapeHtml(mod.author || "Unknown")} &middot; ${mod.category ? escapeHtml(mod.category) : "&mdash;"} &middot; ${escapeHtml(mod.size || "")}</p>
       </div>
-      <button class="monolith-download-btn" data-url="${mod.download_url}" data-filename="${filename}">Download</button>
+      <button class="monolith-download-btn" data-url="${escapeHtml(mod.download_url)}" data-filename="${escapeHtml(filename)}">Download</button>
     </div>
   `;
 }
@@ -1313,7 +1315,7 @@ function renderMonolithResults() {
           m.category?.toLowerCase().includes(term)
       )
     : monolithCatalog;
-  if (!matches.length) return `<p class="detail-status">No mods match "${monolithSearch}".</p>`;
+  if (!matches.length) return `<p class="detail-status">No mods match "${escapeHtml(monolithSearch)}".</p>`;
 
   const totalPages = Math.ceil(matches.length / MONOLITH_RESULTS_LIMIT);
   monolithPage = Math.min(monolithPage, totalPages - 1);
@@ -1336,7 +1338,7 @@ function renderMonolithBrowser() {
   return `
     <p class="home-feed-label" style="margin-top: 2rem;">Browse Community Mods</p>
     <p class="monolith-credit">Thanks to Flate for hosting these mods at Monolith.</p>
-    <input type="text" id="monolith-search" class="monolith-search-input" placeholder="Search by name, author, or category..." value="${monolithSearch}">
+    <input type="text" id="monolith-search" class="monolith-search-input" placeholder="Search by name, author, or category..." value="${escapeHtml(monolithSearch)}">
     <div id="monolith-results">${renderMonolithResults()}</div>
   `;
 }
@@ -1348,7 +1350,7 @@ const INSTALLED_MODS_PAGE_SIZE = 60;
 function renderInstalledModsResults() {
   const term = installedModsSearch.trim().toLowerCase();
   const matches = term ? pk3Mods.filter((m) => m.filename.toLowerCase().includes(term)) : pk3Mods;
-  if (!matches.length) return `<p class="detail-status">No installed mods match "${installedModsSearch}".</p>`;
+  if (!matches.length) return `<p class="detail-status">No installed mods match "${escapeHtml(installedModsSearch)}".</p>`;
 
   const totalPages = Math.ceil(matches.length / INSTALLED_MODS_PAGE_SIZE);
   installedModsPage = Math.min(installedModsPage, totalPages - 1);
@@ -1371,7 +1373,7 @@ function renderInstalledModsResults() {
 
 function renderModsView(mainEl) {
   if (pk3ModsError) {
-    mainEl.innerHTML = `<div class="detail-header"><h2>Mods</h2></div><p class="detail-status">Couldn't load mods: ${pk3ModsError}</p>`;
+    mainEl.innerHTML = `<div class="detail-header"><h2>Mods</h2></div><p class="detail-status">Couldn't load mods: ${escapeHtml(pk3ModsError)}</p>`;
     return;
   }
   if (pk3Mods === null) {
@@ -1380,7 +1382,7 @@ function renderModsView(mainEl) {
     return;
   }
   const installedHtml = pk3Mods.length
-    ? `<input type="text" id="installed-mods-search" class="monolith-search-input" placeholder="Search your installed mods..." value="${installedModsSearch}">
+    ? `<input type="text" id="installed-mods-search" class="monolith-search-input" placeholder="Search your installed mods..." value="${escapeHtml(installedModsSearch)}">
        <div id="installed-mods-results">${renderInstalledModsResults()}</div>`
     : `<p class="detail-status">No mods added yet.</p>`;
   mainEl.innerHTML = `
@@ -1954,7 +1956,7 @@ function formatFlagHold(ms) {
 }
 
 function statTile(value, label) {
-  return `<div class="stat-tile"><span class="stat-tile-value">${value}</span><span class="stat-tile-label">${label}</span></div>`;
+  return `<div class="stat-tile"><span class="stat-tile-value">${escapeHtml(value)}</span><span class="stat-tile-label">${label}</span></div>`;
 }
 
 function renderStatsBlock(mod) {
@@ -1964,10 +1966,10 @@ function renderStatsBlock(mod) {
     return `<p class="stats-month-label">Loading your stats...</p>`;
   }
   if (cached === null) {
-    return `<p class="detail-status">No JK2CTF profile found for "${session.name}". <a class="detail-source-link" href="${mod.profileUrl}" target="_blank" rel="noopener">Check on the site ↗</a></p>`;
+    return `<p class="detail-status">No JK2CTF profile found for "${escapeHtml(session.name)}". <a class="detail-source-link" href="${safeHttpUrl(mod.profileUrl)}" target="_blank" rel="noopener">Check on the site ↗</a></p>`;
   }
   if (cached.error) {
-    return `<p class="detail-status">Couldn't load stats: ${cached.error}</p>`;
+    return `<p class="detail-status">Couldn't load stats: ${escapeHtml(cached.error)}</p>`;
   }
 
   const { currentMonth } = cached;
@@ -1987,10 +1989,10 @@ function renderStatsBlock(mod) {
     : `<p class="detail-status">No scoreboard stats recorded this month.</p>`;
 
   return `
-    <p class="stats-month-label">${currentMonth.label}</p>
+    <p class="stats-month-label">${escapeHtml(currentMonth.label)}</p>
     <p class="stats-record">
-      <span class="win">${currentMonth.wins}W</span> &ndash; <span class="loss">${currentMonth.losses}L</span>
-      ${currentMonth.winRate != null ? ` &middot; ${currentMonth.winRate}% win rate` : ""}
+      <span class="win">${escapeHtml(currentMonth.wins)}W</span> &ndash; <span class="loss">${escapeHtml(currentMonth.losses)}L</span>
+      ${currentMonth.winRate != null ? ` &middot; ${escapeHtml(currentMonth.winRate)}% win rate` : ""}
     </p>
     ${monthTiles}
     <a class="detail-source-link" href="${SORACLE_BASE}/player/${playerSlug(session.name)}" target="_blank" rel="noopener">View full profile ↗</a>
@@ -2026,8 +2028,23 @@ function githubRepoFromUrl(url) {
   }
 }
 
+// Anything that didn't originate in this file - server replies, the
+// manifest, catalogs, feeds, filenames, error text - goes through here
+// before it's put into HTML. Takes anything, since numbers and missing
+// fields turn up too.
 function escapeHtml(s) {
-  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+// For href/src that come from outside: anything but a plain http(s) URL
+// (a javascript: link, say) becomes an empty string.
+function safeHttpUrl(url) {
+  return /^https?:\/\/\S+$/i.test(url ?? "") ? escapeHtml(url) : "";
+}
+
+// Server text: JK2 colour codes stripped, then escaped like everything else.
+function serverText(s) {
+  return escapeHtml(stripQuakeColors(s));
 }
 
 // A few common markdown bits (bold, bullets, line breaks) - GitHub release
@@ -2065,13 +2082,13 @@ function renderReleaseNotesBlock(mod, repo) {
   }
   if (cached === null) return "";
   if (cached.error) {
-    return `<p class="stats-month-label">Latest Release</p><p class="detail-status">Couldn't load release notes: ${cached.error}</p>`;
+    return `<p class="stats-month-label">Latest Release</p><p class="detail-status">Couldn't load release notes: ${escapeHtml(cached.error)}</p>`;
   }
   const body = renderReleaseBody(cached.body);
   return `
-    <p class="stats-month-label">Latest Release &mdash; ${cached.tag_name ?? ""}</p>
+    <p class="stats-month-label">Latest Release &mdash; ${escapeHtml(cached.tag_name ?? "")}</p>
     <div class="release-notes">${body || "<em>No release notes provided.</em>"}</div>
-    <a class="detail-source-link" href="${cached.html_url}" target="_blank" rel="noopener">View on GitHub ↗</a>
+    <a class="detail-source-link" href="${safeHttpUrl(cached.html_url)}" target="_blank" rel="noopener">View on GitHub ↗</a>
   `;
 }
 
@@ -2128,8 +2145,8 @@ function renderMain() {
         loadFolderSuggestion(mod.name);
       } else if (suggestion) {
         actions += `<span class="folder-suggestion">
-          Already installed in <span class="folder-suggestion-path" title="${suggestion}">${suggestion}</span>
-          <button class="change-folder" data-use-suggested-folder="${mod.name}" data-suggested-path="${suggestion}">Use that folder</button>
+          Already installed in <span class="folder-suggestion-path" title="${escapeHtml(suggestion)}">${escapeHtml(suggestion)}</span>
+          <button class="change-folder" data-use-suggested-folder="${escapeHtml(mod.name)}" data-suggested-path="${escapeHtml(suggestion)}">Use that folder</button>
         </span>`;
       }
     }
@@ -2151,14 +2168,14 @@ function renderMain() {
       folderHtml = `
         <p class="client-folder-row">
           <span class="client-folder-label">Game folder</span>
-          <span class="client-folder-path" title="${shown}">${shown}</span>
+          <span class="client-folder-path" title="${escapeHtml(shown)}">${escapeHtml(shown)}</span>
           <span class="client-folder-tag">${folder.is_own ? "this client only" : "shared default"}</span>
-          <button class="change-folder" data-pick-client-folder="${mod.name}">Change...</button>
-          ${folder.is_own ? `<button class="change-folder" data-clear-client-folder="${mod.name}">Use default</button>` : ""}
+          <button class="change-folder" data-pick-client-folder="${escapeHtml(mod.name)}">Change...</button>
+          ${folder.is_own ? `<button class="change-folder" data-clear-client-folder="${escapeHtml(mod.name)}">Use default</button>` : ""}
         </p>`;
     }
   }
-  const banner = `<img class="detail-banner" src="assets/banners/${mod.name.toLowerCase()}.jpg" alt="" onerror="this.remove()">`;
+  const banner = `<img class="detail-banner" src="assets/banners/${encodeURIComponent(mod.name.toLowerCase())}.jpg" alt="" data-on-error="remove">`;
   const repo = githubRepoFromUrl(mod.sourceUrl);
   const releaseHtml = repo ? renderReleaseNotesBlock(mod, repo) : "";
   // "View on GitHub ↗" (in releaseHtml) already covers the source link for
@@ -2166,14 +2183,14 @@ function renderMain() {
   // isn't (e.g. NWH's sourceUrl is Flate's own server, not a repo) - and
   // bottom-left, not up top competing with the masthead emblem for space.
   const sourceHtml = !repo && mod.sourceUrl
-    ? `<p class="detail-source-standalone"><a class="detail-source-link" href="${mod.sourceUrl}" target="_blank" rel="noopener">Source ↗</a></p>`
+    ? `<p class="detail-source-standalone"><a class="detail-source-link" href="${safeHttpUrl(mod.sourceUrl)}" target="_blank" rel="noopener">Source ↗</a></p>`
     : "";
   mainEl.innerHTML = `
     ${banner}
-    <div class="detail-header"><h2>${mod.displayName ?? mod.name}</h2><span class="detail-version">${mod.version}</span></div>
-    <p class="detail-description">${mod.description ?? ""}</p>
+    <div class="detail-header"><h2>${escapeHtml(mod.displayName ?? mod.name)}</h2><span class="detail-version">${escapeHtml(mod.version)}</span></div>
+    <p class="detail-description">${escapeHtml(mod.description ?? "")}</p>
     <div class="detail-actions">${actions}</div>
-    <p class="detail-status">${state.message ?? ""}</p>
+    <p class="detail-status">${escapeHtml(state.message ?? "")}</p>
     ${folderHtml}
     ${releaseHtml}
     ${sourceHtml}
@@ -2187,7 +2204,7 @@ async function handleAction(name, action) {
   if (action === "uninstall") {
     const confirmed = await showConfirmDialog({
       title: "Uninstall?",
-      message: `Remove ${mod.displayName ?? mod.name} from your game folder? Your PK3 mods and player data aren't touched.`,
+      message: `Remove ${escapeHtml(mod.displayName ?? mod.name)} from your game folder? Your PK3 mods and player data aren't touched.`,
       confirmLabel: "Uninstall",
       danger: true,
     });
@@ -2365,7 +2382,7 @@ async function loadManifest() {
   } catch (err) {
     clientListEl.innerHTML = `
       <p class="sidebar-loading">Couldn't reach the manifest - check your connection.</p>
-      <p class="sidebar-loading">${err}</p>
+      <p class="sidebar-loading">${escapeHtml(err)}</p>
       <button id="retry-manifest-btn" class="change-folder">Retry</button>`;
     console.error("Manifest fetch failed:", err);
     return false;
@@ -2525,6 +2542,19 @@ document.getElementById("main").addEventListener("click", (e) => {
   }
 });
 
+// Images that should vanish when their file is missing (a client without a
+// banner, a catalog preview that 404s). Error events don't bubble, so this
+// listens in the capture phase instead of an inline onerror attribute.
+document.addEventListener(
+  "error",
+  (e) => {
+    const action = e.target?.dataset?.onError;
+    if (action === "remove") e.target.remove();
+    else if (action === "hide") e.target.style.visibility = "hidden";
+  },
+  true
+);
+
 document.getElementById("main").addEventListener("dblclick", (e) => {
   const thumb = e.target.closest("[data-media-select]");
   if (thumb) openMediaViewer(thumb.dataset.mediaSelect);
@@ -2607,7 +2637,7 @@ document.getElementById("change-folder-btn").addEventListener("click", async () 
   }
   document.getElementById("main").insertAdjacentHTML(
     "afterbegin",
-    `<p class="detail-status" style="margin-bottom: 1rem;">${message}</p>`
+    `<p class="detail-status" style="margin-bottom: 1rem;">${escapeHtml(message)}</p>`
   );
 });
 

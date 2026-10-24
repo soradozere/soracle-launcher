@@ -77,8 +77,9 @@ fn extract_nwh_macos(archive: &std::path::Path, dest: &std::path::Path) -> Resul
     let mut outer = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
     let inner_name = outer
         .file_names()
-        .find(|n| n.ends_with(".zip") && !is_metadata(std::path::Path::new(n)))
-        .map(str::to_string)
+        .filter_map(|n| n.ok())
+        .find(|n| n.ends_with(".zip") && !is_metadata(std::path::Path::new(n.as_ref())))
+        .map(|n| n.into_owned())
         .ok_or_else(|| "The macOS NWH package has no NWH.app archive inside it".to_string())?;
     let mut inner_bytes = Vec::new();
     outer
@@ -1359,6 +1360,18 @@ fn added_time(path: &std::path::Path) -> u64 {
         .unwrap_or(0)
 }
 
+// A PK3 name as the frontend hands it back: a bare filename, nothing that
+// could be a path. Everything that joins one onto a folder checks this
+// first, so "../x" can never reach outside the folder it's meant for.
+fn check_pk3_filename(filename: &str) -> Result<(), String> {
+    let bare = !filename.contains(['/', '\\']) && filename != "." && filename != "..";
+    if bare && filename.to_lowercase().ends_with(".pk3") {
+        Ok(())
+    } else {
+        Err(format!("{filename} isn't a PK3 filename"))
+    }
+}
+
 fn pk3_library_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("mods_library"))
 }
@@ -1713,8 +1726,13 @@ fn add_pk3_mod(app: tauri::AppHandle, source_path: String) -> Result<String, Str
 // needs to know that absolute path.
 #[tauri::command]
 fn add_pk3_mod_from_download(app: tauri::AppHandle, relative_path: String) -> Result<String, String> {
+    // Only ever pk3_downloads/<name> - the one place the JS side writes to.
+    let filename = relative_path
+        .strip_prefix("pk3_downloads/")
+        .ok_or_else(|| format!("{relative_path} isn't a launcher download"))?;
+    check_pk3_filename(filename)?;
     let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let source = app_data.join(&relative_path);
+    let source = app_data.join("pk3_downloads").join(filename);
     let result = add_pk3_mod_from_path(&app, &source);
     let _ = std::fs::remove_file(&source);
     result
@@ -1722,6 +1740,7 @@ fn add_pk3_mod_from_download(app: tauri::AppHandle, relative_path: String) -> Re
 
 #[tauri::command]
 fn set_pk3_mod_targets(app: tauri::AppHandle, filename: String, targets: Vec<String>) -> Result<(), String> {
+    check_pk3_filename(&filename)?;
     for t in &targets {
         if t != PK3_ALL_TARGET && !PK3_CLIENT_IDS.contains(&t.as_str()) {
             return Err(format!("Unknown target: {t}"));
@@ -1748,6 +1767,7 @@ fn set_pk3_mod_targets(app: tauri::AppHandle, filename: String, targets: Vec<Str
 
 #[tauri::command]
 fn remove_pk3_mod(app: tauri::AppHandle, filename: String) -> Result<(), String> {
+    check_pk3_filename(&filename)?;
     let (_, game_root) = find_jk2_base_and_root(&app, None)?;
     let mut mods = load_pk3_mods(&game_root);
     if let Some(entry) = mods.iter().find(|m| m.filename == filename) {
@@ -2158,9 +2178,15 @@ fn play_demo(app: tauri::AppHandle, client_id: String, path: String) -> Result<S
     } else if client_has_pk3_mods(&game_root, &client_id) {
         args.extend(["+set".to_string(), "fs_game".to_string(), client_mod_folder_name(&client_id)]);
     }
-    // A name with spaces (one renamed outside the launcher) only survives
-    // the client's own tokenizing if it's quoted.
+    // The name becomes part of a console command line. The client splits
+    // those on ';' and reads '"' as quoting, so a file named with either
+    // (one renamed outside the launcher - rename_demo refuses both) could
+    // smuggle commands in after the +demo. Not worth any workaround.
     let name = file.file_name().unwrap_or_default().to_string_lossy().to_string();
+    if name.contains([';', '"']) {
+        return Err(format!("{name} can't be played by name - rename it without ; or \" first"));
+    }
+    // A name with spaces only survives the client's own tokenizing if quoted.
     args.push("+demo".to_string());
     args.push(if name.contains(' ') { format!("\"{name}\"") } else { name });
     spawn_client(&game_root, &client_id, &args)

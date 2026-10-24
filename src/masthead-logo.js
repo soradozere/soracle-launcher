@@ -1,6 +1,6 @@
-import * as THREE from "three";
-import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
-import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
+import * as THREE from "./vendor/three/three.module.js";
+import { GLTFLoader } from "./vendor/three/addons/loaders/GLTFLoader.js";
+import { RoomEnvironment } from "./vendor/three/addons/environments/RoomEnvironment.js";
 
 // The rotating JK2 emblem with a lightsaber blade running behind it, ported
 // from Soracle's masthead-logo-3d.tsx (React Three Fiber) to plain Three.js,
