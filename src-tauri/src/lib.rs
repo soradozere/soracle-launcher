@@ -1557,7 +1557,11 @@ fn undeploy_pk3_from_targets(
 // through as a "mod": reconciliation would track it, and remove_pk3_mod would
 // then delete a file the game needs to run at all.
 fn is_core_pk3(filename: &str) -> bool {
-    filename.trim_start_matches('%').to_lowercase().starts_with("assets")
+    let name = filename.trim_start_matches('%').to_lowercase();
+    // NWH ships its own client code and assets as paks in its nwh/ folder
+    // (nwh-bins.pk3, nwh-assets.pk3, jk2pro-assets.pk3) - part of the client,
+    // not mods, and a hand-installed NWH has no install record to say so.
+    name.starts_with("assets") || name.starts_with("nwh-") || name.starts_with("jk2pro-")
 }
 
 fn list_pk3_filenames(dir: &std::path::Path) -> Vec<String> {
@@ -1619,14 +1623,20 @@ fn reconcile_pk3_mods_with_disk(
         // "all", not the same target listed repeatedly.
         targets.sort();
         targets.dedup();
+        // An all-clients mod is also found in a client's own folder (NWH's on
+        // macOS, where "all" deploys there too) - "all" already covers it.
+        if targets.iter().any(|t| t == PK3_ALL_TARGET) {
+            targets = vec![PK3_ALL_TARGET.to_string()];
+        }
         let library_path = library_dir.join(&filename);
         if !library_path.exists() {
             let _ = std::fs::copy(&source_path, &library_path);
         }
         match mods.iter_mut().find(|m| m.filename == filename) {
             Some(entry) => {
+                let already_all = entry.targets.iter().any(|t| t == PK3_ALL_TARGET);
                 for t in &targets {
-                    if !entry.targets.contains(t) {
+                    if !already_all && !entry.targets.contains(t) {
                         entry.targets.push(t.clone());
                     }
                 }
@@ -1945,7 +1955,7 @@ enum CfgLineKind {
 }
 
 fn classify_cfg_line(line: &str) -> Option<(CfgLineKind, String)> {
-    let mut words = line.trim().split_whitespace();
+    let mut words = line.split_whitespace();
     let first = words.next()?.to_ascii_lowercase();
     if first == "unbindall" {
         return Some((CfgLineKind::Bind, "unbindall".to_string()));
@@ -2453,7 +2463,7 @@ fn list_media_blocking(app: &tauri::AppHandle) -> Vec<MediaItem> {
             }
         }
     }
-    items.sort_by(|a, b| b.modified.cmp(&a.modified));
+    items.sort_by_key(|item| std::cmp::Reverse(item.modified));
     items
 }
 
@@ -2664,9 +2674,10 @@ fn play_demo(app: tauri::AppHandle, client_id: String, path: String) -> Result<S
     if name.contains([';', '"']) {
         return Err(format!("{name} can't be played by name - rename it without ; or \" first"));
     }
-    // A name with spaces only survives the client's own tokenizing if quoted.
+    // A name with spaces is fine as one argv: the engine wraps any argument
+    // containing spaces in quotes itself when it builds its command line.
     args.push("+demo".to_string());
-    args.push(if name.contains(' ') { format!("\"{name}\"") } else { name });
+    args.push(name);
     spawn_client(&game_root, &client_id, &args)
 }
 

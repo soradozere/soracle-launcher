@@ -1054,7 +1054,7 @@ function serverRowHtml(data) {
   const installedJoinable = JOINABLE_CLIENTS.filter((name) => modState[name]?.installed);
   const joinHtml =
     installedJoinable.length === 0
-      ? `<p class="detail-status">Install Tommyternal or JK2MV to join this server.</p>`
+      ? `<p class="detail-status">Install NWH, Tommyternal or JK2MV to join this server.</p>`
       : `<div class="server-join">
           <select class="server-client-select">
             ${installedJoinable.map((name) => `<option value="${name}">${escapeHtml(clientDisplayName(name))}</option>`).join("")}
@@ -1465,9 +1465,9 @@ function showTextDialog({ title, label, value, confirmLabel = "Save", multiline 
     overlay.className = "confirm-overlay";
     overlay.innerHTML = `
       <div class="confirm-dialog ${multiline ? "confirm-dialog--editor" : "confirm-dialog--wide"}">
-        <h3 class="confirm-title">${title}</h3>
+        <h3 class="confirm-title">${escapeHtml(title)}</h3>
         <label class="pinned-edit-field">
-          <span>${label}</span>
+          <span>${escapeHtml(label)}</span>
           ${multiline
             ? `<textarea class="dialog-textarea" spellcheck="false">${escapeHtml(value)}</textarea>`
             : `<input type="text" class="dialog-input" value="${escapeHtml(value)}" spellcheck="false" autocomplete="off">`}
@@ -2103,61 +2103,20 @@ async function trashMedia(path) {
   }
 }
 
-// `submit` runs on Save and throws to keep the dialog open with its message
-// shown - a name that's taken or has a space in it is worth fixing in place,
-// not starting over.
-function showRenameDialog(currentName, submit) {
-  return new Promise((resolve) => {
-    const overlay = document.createElement("div");
-    overlay.className = "confirm-overlay";
-    overlay.innerHTML = `
-      <div class="confirm-dialog confirm-dialog--wide">
-        <h3 class="confirm-title">Rename demo</h3>
-        <label class="pinned-edit-field">
-          <span>Name</span>
-          <input type="text" class="media-rename-input" value="${escapeHtml(currentName)}" spellcheck="false" autocomplete="off">
-        </label>
-        <p class="dialog-error"></p>
-        <div class="confirm-actions">
-          <button class="confirm-cancel-btn">Cancel</button>
-          <button class="confirm-ok-btn">Rename</button>
-        </div>
-      </div>`;
-    document.body.appendChild(overlay);
-    const input = overlay.querySelector(".media-rename-input");
-    const errorEl = overlay.querySelector(".dialog-error");
-    input.focus();
-    input.select();
-
-    function finish(result) {
-      overlay.remove();
-      resolve(result);
-    }
-    async function save() {
-      try {
-        finish(await submit(input.value));
-      } catch (err) {
-        errorEl.textContent = String(err);
-      }
-    }
-    overlay.addEventListener("click", (e) => {
-      if (e.target === overlay) finish(null);
-    });
-    input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") save();
-      if (e.key === "Escape") finish(null);
-    });
-    overlay.querySelector(".confirm-cancel-btn").addEventListener("click", () => finish(null));
-    overlay.querySelector(".confirm-ok-btn").addEventListener("click", save);
-  });
-}
-
 async function renameDemo(path) {
   const item = mediaItems.find((m) => m.path === path);
   if (!item) return;
   const { invoke } = window.__TAURI__.core;
   const stem = item.name.replace(/\.dm_1[56]$/i, "");
-  const newPath = await showRenameDialog(stem, (newName) => invoke("rename_demo", { path, newName }));
+  // A name that's taken or has a space in it is worth fixing in place - the
+  // dialog stays open with the error when `submit` throws.
+  const newPath = await showTextDialog({
+    title: "Rename demo",
+    label: "Name",
+    value: stem,
+    confirmLabel: "Rename",
+    submit: (newName) => invoke("rename_demo", { path, newName }),
+  });
   if (!newPath) return;
   item.path = newPath;
   item.name = newPath.split(/[\\/]/).pop();
