@@ -1,6 +1,6 @@
 [package]
 name = "soracle-launcher"
-version = "0.1.2"
+version = "0.2.0"
 description = "Soracle community launcher for JK2 client mods"
 authors = ["Soracle"]
 license = "MIT"
