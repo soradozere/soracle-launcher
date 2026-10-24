@@ -1575,6 +1575,28 @@ fn client_pk3_dir(app: &tauri::AppHandle, client_id: &str) -> Option<std::path::
         .map(|(_, game_root)| client_mod_folder(&game_root, client_id))
 }
 
+// Folders only this client reads PK3s from, on top of the one the launcher
+// deploys to: the base/ of its own home folder(s). An installed (non-
+// portable) build - JK2MV's macOS and Linux ones - keeps its data there, so
+// that's where its auto-downloads land and where people drop files by hand.
+// Scanned and cleaned up, never deployed to: the launcher's own folder is
+// read by every build of the client, this one only by the installed kind.
+fn client_home_pk3_dirs(app: &tauri::AppHandle, client_id: &str) -> Vec<std::path::PathBuf> {
+    let own = client_pk3_dir(app, client_id).and_then(|d| d.canonicalize().ok());
+    let mut dirs: Vec<std::path::PathBuf> = client_home_dirs(app, client_id)
+        .into_iter()
+        .map(|home| home.join("base"))
+        // Canonical, so one folder reached by two spellings on a
+        // case-insensitive disk (OpenJO/ and openjo/) is listed once.
+        .filter_map(|dir| dir.canonicalize().ok())
+        // NWH's home base/ on macOS is already its deploy folder.
+        .filter(|dir| Some(dir) != own.as_ref())
+        .collect();
+    dirs.sort();
+    dirs.dedup();
+    dirs
+}
+
 // NWH keeps its own "nwh" game folder active (see play_nwh), so its PK3s go
 // where it already looks. The Linux and Windows builds are portable - they
 // run and save in the game folder, so that's game folder/nwh. The macOS
@@ -1648,7 +1670,14 @@ fn undeploy_pk3_from_targets(
     targets: &[String],
 ) -> Result<(), String> {
     for target in targets {
-        for dest in pk3_target_dests(app, target, filename) {
+        let mut dests = pk3_target_dests(app, target, filename);
+        // A client-specific mod may have been found in the client's home
+        // folder rather than put there by the launcher - taking it off that
+        // client means taking it from there too.
+        if target != PK3_ALL_TARGET {
+            dests.extend(client_home_pk3_dirs(app, target).into_iter().map(|d| d.join(filename)));
+        }
+        for dest in dests {
             if dest.exists() {
                 std::fs::remove_file(&dest).map_err(|e| e.to_string())?;
             }
@@ -1715,12 +1744,16 @@ fn reconcile_pk3_mods_with_disk(
             continue;
         };
         let shipped = installed_client_files(&game_root, client_id);
-        for filename in list_pk3_filenames(&folder) {
-            let path = folder.join(&filename);
-            if shipped.contains(&path) {
-                continue;
+        let mut folders = vec![folder];
+        folders.extend(client_home_pk3_dirs(app, client_id));
+        for folder in folders {
+            for filename in list_pk3_filenames(&folder) {
+                let path = folder.join(&filename);
+                if shipped.contains(&path) {
+                    continue;
+                }
+                found.entry(filename).or_insert((Vec::new(), path)).0.push(client_id.to_string());
             }
-            found.entry(filename).or_insert((Vec::new(), path)).0.push(client_id.to_string());
         }
     }
 
