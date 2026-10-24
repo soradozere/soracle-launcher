@@ -1353,7 +1353,7 @@ function pk3RowHtml(mod) {
   const allCheckbox = `<label class="pk3-target"><input type="checkbox" data-filename="${filename}" data-target="all" ${isAll ? "checked" : ""}> All Clients</label>`;
   const clientCheckboxes = pk3TargetClients().map((c) => {
     const checked = !isAll && mod.targets.includes(c.id);
-    return `<label class="pk3-target"><input type="checkbox" data-filename="${filename}" data-target="${c.id}" ${isAll ? "disabled" : ""} ${checked ? "checked" : ""}> ${c.label}</label>`;
+    return `<label class="pk3-target"><input type="checkbox" data-filename="${filename}" data-target="${c.id}" ${isAll ? "disabled" : ""} ${checked ? "checked" : ""}> ${escapeHtml(clientLabel(c.id))}</label>`;
   }).join("");
   return `
     <div class="pk3-row">
@@ -1471,13 +1471,23 @@ function renderMonolithBrowser() {
 }
 
 let installedModsSearch = "";
+let installedModsClient = "all"; // or a PK3_CLIENTS id - a mod for All Clients shows under every one
 let installedModsPage = 0;
 const INSTALLED_MODS_PAGE_SIZE = 60;
 
+function modForClient(mod, clientId) {
+  return clientId === "all" || mod.targets.includes("all") || mod.targets.includes(clientId);
+}
+
 function renderInstalledModsResults() {
   const term = installedModsSearch.trim().toLowerCase();
-  const matches = term ? pk3Mods.filter((m) => m.filename.toLowerCase().includes(term)) : pk3Mods;
-  if (!matches.length) return `<p class="detail-status">No installed mods match "${escapeHtml(installedModsSearch)}".</p>`;
+  const matches = pk3Mods.filter(
+    (m) => modForClient(m, installedModsClient) && (!term || m.filename.toLowerCase().includes(term))
+  );
+  if (!matches.length) {
+    if (term) return `<p class="detail-status">No installed mods match "${escapeHtml(installedModsSearch)}".</p>`;
+    return `<p class="detail-status">No mods are assigned to ${escapeHtml(clientLabel(installedModsClient))}.</p>`;
+  }
 
   const totalPages = Math.ceil(matches.length / INSTALLED_MODS_PAGE_SIZE);
   installedModsPage = Math.min(installedModsPage, totalPages - 1);
@@ -1508,8 +1518,17 @@ function renderModsView(mainEl) {
     loadPk3Mods();
     return;
   }
+  // Same chips as Media: a client's chip shows the mods that client loads,
+  // which includes everything assigned to All Clients.
+  const clientChips = ["all", ...pk3TargetClients().map((c) => c.id)]
+    .map((id) => {
+      const count = pk3Mods.filter((m) => modForClient(m, id)).length;
+      return `<button class="media-chip ${id === installedModsClient ? "active" : ""}" data-mods-client="${id}">${id === "all" ? "All clients" : escapeHtml(clientLabel(id))} <span class="media-chip-count">${count}</span></button>`;
+    })
+    .join("");
   const installedHtml = pk3Mods.length
-    ? `<input type="text" id="installed-mods-search" class="monolith-search-input" placeholder="Search your installed mods..." value="${escapeHtml(installedModsSearch)}">
+    ? `<div class="media-chips">${clientChips}</div>
+       <input type="text" id="installed-mods-search" class="monolith-search-input" placeholder="Search your installed mods..." value="${escapeHtml(installedModsSearch)}">
        <div id="installed-mods-results">${renderInstalledModsResults()}</div>`
     : `<p class="detail-status">No mods added yet.</p>`;
   mainEl.innerHTML = `
@@ -2772,7 +2791,13 @@ async function retryManifestLoad() {
 
 document.getElementById("home-nav-row").addEventListener("click", () => selectClient("__home__"));
 document.getElementById("ctf-nav-row").addEventListener("click", () => selectClient("__ctf__"));
-document.getElementById("mods-nav-row").addEventListener("click", () => selectClient("__mods__"));
+document.getElementById("mods-nav-row").addEventListener("click", () => {
+  // Fresh scan each visit, so a PK3 dropped into a game folder while the
+  // app was open shows up without a restart.
+  pk3Mods = null;
+  pk3ModsError = null;
+  selectClient("__mods__");
+});
 document.getElementById("config-nav-row").addEventListener("click", () => {
   configView = null; // fresh look at the configs each visit
   configError = null;
@@ -2879,6 +2904,13 @@ document.getElementById("main").addEventListener("click", (e) => {
   if (e.target.closest("#monolith-next-page")) {
     monolithPage += 1;
     document.getElementById("monolith-results").innerHTML = renderMonolithResults();
+    return;
+  }
+  const modsClientBtn = e.target.closest("[data-mods-client]");
+  if (modsClientBtn) {
+    installedModsClient = modsClientBtn.dataset.modsClient;
+    installedModsPage = 0;
+    renderMainPreservingScroll();
     return;
   }
   if (e.target.closest("#installed-mods-prev-page")) {
