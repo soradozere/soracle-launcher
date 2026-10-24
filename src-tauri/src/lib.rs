@@ -1435,6 +1435,30 @@ const PK3_CLIENT_IDS: [&str; 4] =
     [TOMMYTERNAL_MOD_ID, OPENJO_MOD_ID, JK2MV_MOD_ID, NWH_MOD_ID];
 const PK3_ALL_TARGET: &str = "all";
 
+// Clients that bring their own menu module and menus. A PK3 that swaps out
+// the stock multiplayer menus stops them starting at all: Tommyternal's menu
+// dies loading Expanded_Menu.pk3's, with nothing more than "Error during
+// initialization" to show for it.
+const OWN_MENU_CLIENT_IDS: [&str; 2] = [TOMMYTERNAL_MOD_ID, NWH_MOD_ID];
+
+// Whether a PK3 carries its own multiplayer menus - the menu lists the UI
+// loads, or any of the menus in them. Only the zip's directory is read.
+fn pk3_replaces_menus(path: &std::path::Path) -> bool {
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let Ok(archive) = zip::ZipArchive::new(file) else {
+        return false;
+    };
+    let replaces = archive.file_names().filter_map(Result::ok).any(|name| {
+        let name = name.replace('\\', "/").to_ascii_lowercase();
+        name == "ui/jk2mpmenus.txt"
+            || name == "ui/jk2mpingame.txt"
+            || (name.starts_with("ui/jk2mp/") && name.ends_with(".menu"))
+    });
+    replaces
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 struct Pk3Mod {
     filename: String,
@@ -1445,6 +1469,10 @@ struct Pk3Mod {
     // backfills them (see added_time).
     #[serde(default)]
     added: u64,
+    // Worked out from the file each time the list is read, never trusted
+    // from the manifest.
+    #[serde(default, skip_deserializing)]
+    replaces_menus: bool,
 }
 
 fn unix_secs(time: std::time::SystemTime) -> u64 {
@@ -1782,7 +1810,7 @@ fn reconcile_pk3_mods_with_disk(
             }
             None => {
                 let added = added_time(&source_path);
-                mods.push(Pk3Mod { filename, targets, added });
+                mods.push(Pk3Mod { filename, targets, added, replaces_menus: false });
             }
         }
     }
@@ -1802,6 +1830,9 @@ fn list_pk3_mods(app: tauri::AppHandle) -> Result<Vec<Pk3Mod>, String> {
         m.added = added_time(&library_dir.join(&m.filename));
     }
     save_pk3_mods(&game_root, &mods)?;
+    for m in mods.iter_mut() {
+        m.replaces_menus = pk3_replaces_menus(&library_dir.join(&m.filename));
+    }
     mods.sort_by(|a, b| b.added.cmp(&a.added).then_with(|| a.filename.cmp(&b.filename)));
     Ok(mods)
 }
@@ -1845,16 +1876,31 @@ fn add_pk3_mod_from_path(app: &tauri::AppHandle, source: &std::path::Path) -> Re
     std::fs::copy(source, &library_path).map_err(|e| e.to_string())?;
 
     // A new mod goes to All Clients straight away - picking clients is for
-    // narrowing it down, not a step needed before it does anything. Adding
-    // one that's already tracked keeps whatever it was set to, but refreshes
-    // the copies the clients load, in case this is a newer version of it.
+    // narrowing it down, not a step needed before it does anything. The one
+    // exception is a menu replacement, which goes only to the clients that
+    // use the stock menus. Adding one that's already tracked keeps whatever
+    // it was set to, but refreshes the copies the clients load, in case this
+    // is a newer version of it.
     let (_, game_root) = find_jk2_base_and_root(app, None)?;
     let mut mods = load_pk3_mods(&game_root);
     let targets = match mods.iter().find(|m| m.filename == filename) {
         Some(existing) => existing.targets.clone(),
         None => {
-            let targets = vec![PK3_ALL_TARGET.to_string()];
-            mods.push(Pk3Mod { filename: filename.clone(), targets: targets.clone(), added: now_secs() });
+            let targets = if pk3_replaces_menus(&library_path) {
+                PK3_CLIENT_IDS
+                    .iter()
+                    .filter(|id| !OWN_MENU_CLIENT_IDS.contains(id))
+                    .map(|id| id.to_string())
+                    .collect()
+            } else {
+                vec![PK3_ALL_TARGET.to_string()]
+            };
+            mods.push(Pk3Mod {
+                filename: filename.clone(),
+                targets: targets.clone(),
+                added: now_secs(),
+                replaces_menus: false,
+            });
             save_pk3_mods(&game_root, &mods)?;
             targets
         }

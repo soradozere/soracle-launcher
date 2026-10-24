@@ -404,6 +404,16 @@ function pk3TargetClients() {
   return PK3_CLIENTS.filter((c) => modSupportedOnCurrentPlatform(c.name));
 }
 
+// Clients with their own menus, which won't start with a PK3 that replaces
+// the stock ones (OWN_MENU_CLIENT_IDS on the Rust side).
+const OWN_MENU_CLIENT_IDS = ["tommyternal", "nwh"];
+
+function ownMenuClientsIn(targets) {
+  return pk3TargetClients()
+    .map((c) => c.id)
+    .filter((id) => OWN_MENU_CLIENT_IDS.includes(id) && (targets.includes("all") || targets.includes(id)));
+}
+
 // Kept in sync by hand with jk2ctf.com/faq's ACCOUNT + LAUNCHER sections -
 // embedded here so opening it doesn't leave the app. /ctf-101 (gameplay) has
 // no launcher equivalent since none of it is launcher-specific. Ordered
@@ -1327,6 +1337,22 @@ async function togglePk3Target(filename, target, checked) {
     targets = mod.targets.filter((t) => t !== "all");
     targets = checked ? [...new Set([...targets, target])] : targets.filter((t) => t !== target);
   }
+  const newlyBroken = mod.replaces_menus
+    ? ownMenuClientsIn(targets).filter((id) => !ownMenuClientsIn(mod.targets).includes(id))
+    : [];
+  if (newlyBroken.length) {
+    const names = newlyBroken.map((id) => escapeHtml(clientLabel(id))).join(" and ");
+    const confirmed = await showConfirmDialog({
+      title: "Replace the menus?",
+      message: `${escapeHtml(mod.filename)} replaces the multiplayer menus. ${names} ${newlyBroken.length === 1 ? "has" : "have"} ${newlyBroken.length === 1 ? "its" : "their"} own and usually won't start with it ("Error during initialization").`,
+      confirmLabel: "Add anyway",
+      danger: true,
+    });
+    if (!confirmed) {
+      renderMainPreservingScroll();
+      return;
+    }
+  }
   try {
     const { invoke } = window.__TAURI__.core;
     await invoke("set_pk3_mod_targets", { filename, targets });
@@ -1356,9 +1382,15 @@ function pk3RowHtml(mod) {
     const checked = !isAll && mod.targets.includes(c.id);
     return `<label class="pk3-target"><input type="checkbox" data-filename="${filename}" data-target="${c.id}" ${isAll ? "disabled" : ""} ${checked ? "checked" : ""}> ${escapeHtml(clientLabel(c.id))}</label>`;
   }).join("");
+  const broken = mod.replaces_menus ? ownMenuClientsIn(mod.targets) : [];
+  const menuFlag = mod.replaces_menus
+    ? `<span class="pk3-flag${broken.length ? " pk3-flag--warn" : ""}" title="${broken.length
+        ? `${broken.map((id) => clientLabel(id)).join(" and ")} won't start with this - untick ${broken.length === 1 ? "it" : "them"}.`
+        : "Swaps out the stock multiplayer menus, so it's kept off clients that have their own."}">${broken.length ? `Breaks ${escapeHtml(broken.map((id) => clientLabel(id)).join(", "))}` : "Replaces menus"}</span>`
+    : "";
   return `
     <div class="pk3-row">
-      <span class="pk3-name">${filename}</span>
+      <span class="pk3-name-col"><span class="pk3-name">${filename}</span>${menuFlag}</span>
       <div class="pk3-targets">${allCheckbox}${clientCheckboxes}</div>
       <button class="pk3-remove-btn" data-filename="${filename}">Remove</button>
     </div>
