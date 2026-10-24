@@ -545,15 +545,16 @@ async function downloadFile(url, filename, expectedSha256) {
   return { verified: actual.toLowerCase() === expectedSha256.toLowerCase(), actual };
 }
 
-// The Clients group in the sidebar folds open and shut, and remembers which.
-// Opening a client from anywhere else (a Home banner's Install, say) opens it
-// too, so the active client is never hidden inside a closed group.
+// The Clients group in the sidebar starts folded and remembers whether it
+// was left open. Opening a client from anywhere else (a Home banner's
+// Install, say) unfolds it, so the active client is never hidden inside a
+// closed group.
 const CLIENTS_GROUP_OPEN_KEY = "jk2launcher.clientsGroupOpen";
 let clientsGroupOpen = (() => {
   try {
-    return localStorage.getItem(CLIENTS_GROUP_OPEN_KEY) !== "0";
+    return localStorage.getItem(CLIENTS_GROUP_OPEN_KEY) === "1";
   } catch {
-    return true;
+    return false;
   }
 })();
 
