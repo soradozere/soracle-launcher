@@ -514,6 +514,7 @@ function renderSidebar() {
   document.getElementById("ctf-nav-row").classList.toggle("active", selected === "__ctf__");
   document.getElementById("mods-nav-row").classList.toggle("active", selected === "__mods__");
   document.getElementById("media-nav-row").classList.toggle("active", selected === "__media__");
+  document.getElementById("config-nav-row").classList.toggle("active", selected === "__config__");
   document.getElementById("servers-nav-row").classList.toggle("active", selected === "__servers__");
   document.getElementById("faq-nav-row").classList.toggle("active", selected === "__faq__");
   document.getElementById("sign-out-section").hidden = !session;
@@ -973,9 +974,9 @@ function renderCtfView(mainEl) {
     <div class="ctf-play-row">
       ${modePlayButtonHtml(ctfMode, "Play CTF")}
       <span class="ctf-play-meta">${modeMetaText(ctfMode, modeClient(ctfMode))}</span>
+      <a class="ctf-site-btn" href="${SORACLE_BASE}" target="_blank" rel="noopener">Visit JK2CTF.com <span aria-hidden="true">&#8599;</span></a>
     </div>
     ${accountHtml}
-    <a class="ctf-site-btn" href="${SORACLE_BASE}" target="_blank" rel="noopener">Visit JK2CTF.com <span aria-hidden="true">&#8599;</span></a>
     ${renderRecentHighlightsBlock()}
     <p class="home-feed-label">Recent Activity</p>
     ${feedHtml}
@@ -1409,6 +1410,161 @@ function renderModsView(mainEl) {
     <p class="detail-status" id="pk3-status"></p>
     ${installedHtml}
     ${renderMonolithBrowser()}
+  `;
+}
+
+// --- Config: shared settings across clients --------------------------------
+// The Rust side owns the data (shared_settings.json) and does the reading
+// and writing; this is the page over it.
+
+let sharedSettings = null; // view from get_shared_settings, or null while loading
+let sharedSettingsError = null;
+let configStatus = "";
+
+const SHARED_CATEGORY_LABELS = {
+  controls: { title: "Controls", detail: "every key and mouse bind", unit: "binds" },
+  mouse_view: { title: "Mouse and view", detail: "sensitivity, FOV, yaw speed, free look", unit: "settings" },
+  video: { title: "Video", detail: "resolution, fullscreen, vsync, texture quality, FPS cap", unit: "settings" },
+  audio: { title: "Audio", detail: "volume, music, sound system", unit: "settings" },
+  player: { title: "Player", detail: "name, model, saber colours", unit: "settings" },
+};
+
+async function loadSharedSettings() {
+  try {
+    const { invoke } = window.__TAURI__.core;
+    sharedSettings = await invoke("get_shared_settings");
+    sharedSettingsError = null;
+  } catch (err) {
+    sharedSettingsError = String(err);
+  }
+  if (selected === "__config__") renderMainPreservingScroll();
+}
+
+function setConfigStatus(message) {
+  configStatus = message;
+  const el = document.getElementById("config-status");
+  if (el) el.textContent = message;
+}
+
+async function pullSharedSettings() {
+  const source = document.getElementById("config-source")?.value;
+  if (!source) return;
+  setConfigStatus("Reading...");
+  try {
+    const { invoke } = window.__TAURI__.core;
+    sharedSettings = await invoke("pull_shared_settings", { source });
+    configStatus = "";
+    renderMainPreservingScroll();
+  } catch (err) {
+    setConfigStatus(`Error: ${err}`);
+  }
+}
+
+async function saveSharedSettingsChoices() {
+  const categories = [...document.querySelectorAll("input[data-config-category]:checked")].map((el) => el.dataset.configCategory);
+  const targets = [...document.querySelectorAll("input[data-config-target]:checked")].map((el) => el.dataset.configTarget);
+  try {
+    const { invoke } = window.__TAURI__.core;
+    sharedSettings = await invoke("save_shared_settings", { categories, targets });
+    renderMainPreservingScroll();
+  } catch (err) {
+    setConfigStatus(`Error: ${err}`);
+  }
+}
+
+async function applySharedSettings() {
+  setConfigStatus("Writing...");
+  try {
+    const { invoke } = window.__TAURI__.core;
+    setConfigStatus(await invoke("apply_shared_settings"));
+  } catch (err) {
+    setConfigStatus(`Error: ${err}`);
+  }
+}
+
+function sharedCategoryRowHtml(cat) {
+  const label = SHARED_CATEGORY_LABELS[cat.id];
+  const on = sharedSettings.categories.includes(cat.id);
+  const pulled = !!sharedSettings.source;
+  const count = !pulled ? "" : cat.count ? `${cat.count} ${label.unit}` : "none in source";
+  return `
+    <label class="config-row ${on ? "on" : ""} ${pulled ? "" : "config-row--muted"}">
+      <input type="checkbox" data-config-category="${cat.id}" ${on ? "checked" : ""} ${pulled ? "" : "disabled"}>
+      <span class="config-row-main">
+        <span class="config-row-title">${label.title}</span>
+        <span class="config-row-detail">${label.detail}</span>
+      </span>
+      <span class="config-row-count">${count}</span>
+    </label>`;
+}
+
+function sharedTargetRowHtml(client) {
+  const on = sharedSettings.targets.includes(client.id);
+  const isSource = sharedSettings.source === client.id;
+  let status;
+  if (isSource) {
+    status = "source";
+  } else if (client.id === "openjo") {
+    status = "campaign - controls only";
+  } else if (!client.cfg_path) {
+    status = "not run yet";
+  } else if (!sharedSettings.source) {
+    status = "";
+  } else {
+    status = client.changes === 0 ? "already matches" : `${client.changes} line${client.changes === 1 ? "" : "s"} will change`;
+  }
+  return `
+    <label class="config-row ${on && !isSource ? "on" : ""}">
+      <input type="checkbox" data-config-target="${client.id}" ${on ? "checked" : ""} ${isSource ? "disabled" : ""}>
+      <span class="config-row-main">
+        <span class="config-row-title">${escapeHtml(clientLabel(client.id))}</span>
+        <span class="config-row-detail">${escapeHtml(status)}</span>
+      </span>
+      <span class="config-row-count">${on && !isSource ? "on" : isSource ? "" : "off"}</span>
+    </label>`;
+}
+
+function renderConfigView(mainEl) {
+  const header = `<div class="detail-header"><h2>Config</h2></div>
+    <p class="detail-description">Keep the same controls and settings in every client. Pick one client to take them from; the others get them the next time they're launched from here. Your clients' own config files are never edited.</p>`;
+  if (sharedSettingsError) {
+    mainEl.innerHTML = `${header}<p class="detail-status">Couldn't load shared settings: ${escapeHtml(sharedSettingsError)}</p>`;
+    return;
+  }
+  if (sharedSettings === null) {
+    mainEl.innerHTML = `${header}<p class="detail-status">Loading...</p>`;
+    loadSharedSettings();
+    return;
+  }
+
+  const withCfg = sharedSettings.clients.filter((c) => c.cfg_path && c.id !== "openjo");
+  const sourceOptions = withCfg.length
+    ? withCfg.map((c) => `<option value="${c.id}" ${c.id === sharedSettings.source ? "selected" : ""}>${escapeHtml(clientLabel(c.id))}</option>`).join("")
+    : `<option value="">No client has saved a config yet</option>`;
+  const pulledAt = sharedSettings.pulled_at ? `Last pulled ${formatMediaDate(sharedSettings.pulled_at)}` : "Not pulled yet";
+  const previewLines = sharedSettings.preview;
+  const previewHtml = previewLines.length
+    ? `<pre class="config-preview">${escapeHtml(previewLines.slice(0, 14).join("\n"))}${previewLines.length > 14 ? `\n… ${previewLines.length - 14} more lines` : ""}</pre>`
+    : "";
+
+  mainEl.innerHTML = `
+    ${header}
+    <p class="home-feed-label">Take settings from</p>
+    <div class="config-source-row">
+      <select id="config-source" class="server-client-select" ${withCfg.length ? "" : "disabled"}>${sourceOptions}</select>
+      <button class="change-folder" id="config-pull-btn" ${withCfg.length ? "" : "disabled"}>Pull now</button>
+      <span class="detail-status">${pulledAt}</span>
+    </div>
+    <p class="home-feed-label">What to share</p>
+    <div class="config-list">${sharedSettings.available.map(sharedCategoryRowHtml).join("")}</div>
+    <p class="home-feed-label">Applies to</p>
+    <div class="config-list">${sharedSettings.clients.map(sharedTargetRowHtml).join("")}</div>
+    ${previewHtml}
+    <div class="config-apply-row">
+      <button class="change-folder" id="config-apply-btn" ${sharedSettings.source ? "" : "disabled"}>Write now</button>
+      <span class="detail-status" id="config-status">${escapeHtml(configStatus)}</span>
+    </div>
+    <p class="detail-status">Launching a client from here always writes the current shared settings first. "Write now" is for clients you start some other way - run <code>exec launcher_shared.cfg</code> in their console.</p>
   `;
 }
 
@@ -2012,7 +2168,6 @@ function renderStatsBlock(mod) {
       ${currentMonth.winRate != null ? ` &middot; ${escapeHtml(currentMonth.winRate)}% win rate` : ""}
     </p>
     ${monthTiles}
-    <a class="detail-source-link" href="${SORACLE_BASE}/player/${playerSlug(session.name)}" target="_blank" rel="noopener">View full profile ↗</a>
   `;
 }
 
@@ -2129,6 +2284,10 @@ function renderMain() {
   }
   if (selected === "__media__") {
     renderMediaView(mainEl);
+    return;
+  }
+  if (selected === "__config__") {
+    renderConfigView(mainEl);
     return;
   }
   if (selected === "__servers__") {
@@ -2417,6 +2576,11 @@ async function retryManifestLoad() {
 document.getElementById("home-nav-row").addEventListener("click", () => selectClient("__home__"));
 document.getElementById("ctf-nav-row").addEventListener("click", () => selectClient("__ctf__"));
 document.getElementById("mods-nav-row").addEventListener("click", () => selectClient("__mods__"));
+document.getElementById("config-nav-row").addEventListener("click", () => {
+  sharedSettings = null; // fresh look at the configs each visit
+  sharedSettingsError = null;
+  selectClient("__config__");
+});
 document.getElementById("media-nav-row").addEventListener("click", () => {
   refreshMedia();
   selectClient("__media__");
@@ -2448,6 +2612,14 @@ document.getElementById("main").addEventListener("click", (e) => {
     return;
   }
   if (handleMediaClick(e)) return;
+  if (e.target.closest("#config-pull-btn")) {
+    pullSharedSettings();
+    return;
+  }
+  if (e.target.closest("#config-apply-btn")) {
+    applySharedSettings();
+    return;
+  }
   const useSuggestedBtn = e.target.closest("button[data-use-suggested-folder]");
   if (useSuggestedBtn) {
     useSuggestedFolder(useSuggestedBtn.dataset.useSuggestedFolder, useSuggestedBtn.dataset.suggestedPath);
@@ -2578,6 +2750,10 @@ document.getElementById("main").addEventListener("dblclick", (e) => {
 });
 
 document.getElementById("main").addEventListener("change", (e) => {
+  if (e.target.closest("input[data-config-category], input[data-config-target]")) {
+    saveSharedSettingsChoices();
+    return;
+  }
   const cb = e.target.closest('input[type="checkbox"][data-target]');
   if (cb) togglePk3Target(cb.dataset.filename, cb.dataset.target, cb.checked);
 });

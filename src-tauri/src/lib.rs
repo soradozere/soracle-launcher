@@ -1052,6 +1052,7 @@ fn uninstall_nwh(app: tauri::AppHandle) -> Result<String, String> {
 fn play_nwh(app: tauri::AppHandle, connect_address: Option<String>) -> Result<String, String> {
     let (_, game_root) = find_jk2_base_and_root(&app, Some(NWH_MOD_ID))?;
     let mut args = nwh_launch_args(&game_root);
+    args.extend(shared_settings_args(&app, NWH_MOD_ID));
     if let Some(address) = connect_address {
         args.extend(["+connect".to_string(), address]);
     }
@@ -1100,6 +1101,7 @@ fn play_tommyternal(app: tauri::AppHandle, connect_address: Option<String>) -> R
     if client_has_pk3_mods(&game_root, TOMMYTERNAL_MOD_ID) {
         cmd.args(["+set", "fs_game", &client_mod_folder_name(TOMMYTERNAL_MOD_ID)]);
     }
+    cmd.args(shared_settings_args(&app, TOMMYTERNAL_MOD_ID));
     if let Some(address) = &connect_address {
         cmd.args(["+connect", address]);
     }
@@ -1229,32 +1231,14 @@ fn uninstall_openjo(app: tauri::AppHandle) -> Result<String, String> {
 fn play_openjo(app: tauri::AppHandle) -> Result<String, String> {
     // Single-player only - no +connect support here (see manifest description).
     let (_, game_root) = find_jk2_base_and_root(&app, Some(OPENJO_MOD_ID))?;
-
-    if cfg!(target_os = "macos") {
-        let app_bundle = game_root.join(client_binary_name(OPENJO_MOD_ID).unwrap());
-        let mut cmd = std::process::Command::new("open");
-        cmd.arg(&app_bundle);
-        if client_has_pk3_mods(&game_root, OPENJO_MOD_ID) {
-            cmd.args(["--args", "+set", "fs_game", &client_mod_folder_name(OPENJO_MOD_ID)]);
-        }
-        cmd.spawn().map_err(|e| e.to_string())?;
-        return Ok(format!("Launched {}", app_bundle.display()));
-    }
-
-    // Windows/Linux have no app-bundle concept - the binary is launched
-    // directly, so unlike the "open --args" dance above, extra flags just
-    // go straight on the command line.
-    let binary = game_root.join(client_binary_name(OPENJO_MOD_ID).unwrap());
-    let mut cmd = std::process::Command::new(&binary);
-    cmd.current_dir(&game_root);
+    let mut args: Vec<String> = Vec::new();
     if client_has_pk3_mods(&game_root, OPENJO_MOD_ID) {
-        cmd.args(["+set", "fs_game", &client_mod_folder_name(OPENJO_MOD_ID)]);
+        args.extend(["+set".to_string(), "fs_game".to_string(), client_mod_folder_name(OPENJO_MOD_ID)]);
     }
-    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
-    std::thread::spawn(move || {
-        let _ = child.wait();
-    });
-    Ok(format!("Launched {}", binary.display()))
+    args.extend(shared_settings_args(&app, OPENJO_MOD_ID));
+    // spawn_client goes through `open --args` for the macOS .app bundle and
+    // runs the binary directly elsewhere.
+    spawn_client(&game_root, OPENJO_MOD_ID, &args)
 }
 
 const JK2MV_MOD_ID: &str = "jk2mv";
@@ -1307,6 +1291,7 @@ fn play_jk2mv(app: tauri::AppHandle, connect_address: Option<String>) -> Result<
         extra_args.push("fs_game".to_string());
         extra_args.push(client_mod_folder_name(JK2MV_MOD_ID));
     }
+    extra_args.extend(shared_settings_args(&app, JK2MV_MOD_ID));
     if let Some(address) = &connect_address {
         extra_args.push("+connect".to_string());
         extra_args.push(address.clone());
@@ -1798,6 +1783,367 @@ fn remove_pk3_mod(app: tauri::AppHandle, filename: String) -> Result<(), String>
     Ok(())
 }
 
+// --- Shared settings: one client's controls and settings in all of them ----
+// Each client keeps its own config, so binds and settings drift apart. The
+// launcher takes a chosen client's config, keeps the lines in the chosen
+// categories, and writes them as launcher_shared.cfg into every client that
+// opted in, then adds `+exec launcher_shared.cfg` to that client's launch.
+// The engine runs that after the client's own config, so these values win -
+// and the client saves them into its own config on exit. The clients' own
+// config files are never edited.
+
+const SHARED_CFG_NAME: &str = "launcher_shared.cfg";
+
+// Which cvars count as which category. `bind` lines (and `unbindall`) are
+// the controls category on their own.
+const SHARED_CATEGORIES: [(&str, &[&str]); 4] = [
+    ("mouse_view", &[
+        "sensitivity", "m_pitch", "m_yaw", "m_forward", "m_side", "m_filter", "in_mouse",
+        "cl_mouseaccel", "cl_mouseaccelstyle", "cl_freelook", "cl_run", "cl_yawspeed", "cl_pitchspeed",
+        "cg_fov", "cg_fovaspectadjust", "cg_fovviewmodel", "cg_fovviewmodeladjust",
+    ]),
+    ("video", &[
+        "r_mode", "r_customwidth", "r_customheight", "r_fullscreen", "r_noborder", "r_swapinterval",
+        "r_displayrefresh", "r_gamma", "r_intensity", "r_picmip", "r_texturebits", "r_colorbits",
+        "r_depthbits", "r_texturemode", "r_ext_texture_filter_anisotropic", "r_lodbias",
+        "r_detailtextures", "r_dynamiclight", "r_fastsky", "com_maxfps", "cg_drawfps",
+    ]),
+    ("audio", &["s_volume", "s_musicvolume", "s_khz", "s_useopenal", "s_doppler", "s_mixahead"]),
+    ("player", &["name", "model", "color1", "color2", "saber", "sex", "forcepowers"]),
+];
+const CONTROLS_CATEGORY: &str = "controls";
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct SharedLine {
+    category: String,
+    // "bind <key>" or the cvar name - what a later line with the same key
+    // replaces.
+    key: String,
+    line: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
+struct SharedSettingsStore {
+    source: Option<String>,
+    #[serde(default)]
+    pulled_at: u64,
+    #[serde(default)]
+    categories: Vec<String>,
+    #[serde(default)]
+    targets: Vec<String>,
+    #[serde(default)]
+    lines: Vec<SharedLine>,
+}
+
+fn shared_settings_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("shared_settings.json"))
+}
+
+fn load_shared_settings(app: &tauri::AppHandle) -> SharedSettingsStore {
+    shared_settings_path(app)
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn save_shared_settings_store(app: &tauri::AppHandle, store: &SharedSettingsStore) -> Result<(), String> {
+    let path = shared_settings_path(app)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(path, serde_json::to_string_pretty(store).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+}
+
+// The config each client writes and the game dir it writes it into, plus
+// the "global" config JK2MV-family clients keep in base/ for settings that
+// apply whatever mod is active - that's where sensitivity, video and audio
+// live for them; the main config holds the binds. OpenJO has no global one.
+fn client_cfg_spec(client_id: &str) -> Option<(&'static str, &'static str, Option<&'static str>)> {
+    Some(match client_id {
+        TOMMYTERNAL_MOD_ID => ("eternaljk2", "eternaljk2mv.cfg", Some("eternaljk2mvglobal.cfg")),
+        NWH_MOD_ID => ("nwh", "nwh.cfg", Some("nwhglobal.cfg")),
+        JK2MV_MOD_ID => ("base", "jk2mvconfig.cfg", Some("jk2mvglobal.cfg")),
+        OPENJO_MOD_ID => ("base", "openjo_sp.cfg", None),
+        _ => return None,
+    })
+}
+
+// Every folder a client might read or write configs under: its game folder
+// and its own home folder(s), where an installed (non-portable) build
+// keeps its data instead.
+fn client_cfg_roots(app: &tauri::AppHandle, client_id: &str) -> Vec<std::path::PathBuf> {
+    let mut roots = client_home_dirs(app, client_id);
+    if let Ok((_, game_root)) = find_jk2_base_and_root(app, Some(client_id)) {
+        roots.push(game_root);
+    }
+    roots
+}
+
+// The client's current config - the newest copy wherever it writes one.
+// With PK3 mods active a client runs in its launchermods_ folder and writes
+// its config there instead, so that's checked too.
+fn find_client_cfg(app: &tauri::AppHandle, client_id: &str) -> Option<std::path::PathBuf> {
+    let (subdir, filename, _) = client_cfg_spec(client_id)?;
+    newest_file(
+        client_cfg_roots(app, client_id)
+            .into_iter()
+            .flat_map(|root| [root.join(subdir).join(filename), root.join(client_mod_folder_name(client_id)).join(filename)]),
+    )
+}
+
+fn find_client_global_cfg(app: &tauri::AppHandle, client_id: &str) -> Option<std::path::PathBuf> {
+    let (_, _, global) = client_cfg_spec(client_id)?;
+    let global = global?;
+    newest_file(client_cfg_roots(app, client_id).into_iter().map(|root| root.join("base").join(global)))
+}
+
+fn newest_file(candidates: impl Iterator<Item = std::path::PathBuf>) -> Option<std::path::PathBuf> {
+    candidates
+        .filter(|p| p.is_file())
+        .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
+}
+
+// Both of a client's configs as one text, global first so the main config
+// wins where they overlap.
+fn read_client_cfgs(app: &tauri::AppHandle, client_id: &str) -> Result<String, String> {
+    let main = find_client_cfg(app, client_id)
+        .ok_or_else(|| "That client hasn't written a config yet - run it once first".to_string())?;
+    let mut text = String::new();
+    if let Some(global) = find_client_global_cfg(app, client_id) {
+        text.push_str(&std::fs::read_to_string(global).map_err(|e| e.to_string())?);
+        text.push('\n');
+    }
+    text.push_str(&std::fs::read_to_string(main).map_err(|e| e.to_string())?);
+    Ok(text)
+}
+
+// Where launcher_shared.cfg goes so `exec` finds it: base/ under each of the
+// client's roots - the engine looks in base/ of its home and game folders
+// whatever game dir is active. NWH.app on macOS reads no loose files from
+// the game folder at all, only its NWHClient folder, so that one is always
+// included for it.
+fn shared_cfg_dirs(app: &tauri::AppHandle, client_id: &str) -> Vec<std::path::PathBuf> {
+    let mut dirs: Vec<std::path::PathBuf> = client_cfg_roots(app, client_id).into_iter().map(|r| r.join("base")).collect();
+    if client_id == NWH_MOD_ID && cfg!(target_os = "macos") {
+        dirs.extend(nwh_mod_dir(app));
+    }
+    // A case-insensitive disk reaches one folder by two spellings
+    // (OpenJO/ and openjo/, seen for real) - canonicalize what exists so it
+    // isn't written twice or counted twice.
+    let mut dirs: Vec<std::path::PathBuf> = dirs.into_iter().map(|d| d.canonicalize().unwrap_or(d)).collect();
+    dirs.sort();
+    dirs.dedup();
+    dirs
+}
+
+fn categorise_cfg_line(line: &str) -> Option<(String, String)> {
+    let trimmed = line.trim();
+    let mut words = trimmed.split_whitespace();
+    let first = words.next()?.to_ascii_lowercase();
+    if first == "unbindall" {
+        return Some((CONTROLS_CATEGORY.to_string(), "unbindall".to_string()));
+    }
+    let name = words.next()?.to_ascii_lowercase();
+    if first == "bind" {
+        return Some((CONTROLS_CATEGORY.to_string(), format!("bind {name}")));
+    }
+    if first != "seta" && first != "set" {
+        return None;
+    }
+    SHARED_CATEGORIES
+        .iter()
+        .find(|(_, cvars)| cvars.contains(&name.as_str()))
+        .map(|(category, _)| (category.to_string(), name))
+}
+
+fn extract_shared_lines(cfg_text: &str) -> Vec<SharedLine> {
+    let mut lines: Vec<SharedLine> = Vec::new();
+    for line in cfg_text.lines() {
+        let Some((category, key)) = categorise_cfg_line(line) else { continue };
+        let entry = SharedLine { category, key, line: line.trim().to_string() };
+        match lines.iter_mut().find(|l| l.key == entry.key) {
+            Some(existing) => *existing = entry,
+            None => lines.push(entry),
+        }
+    }
+    lines
+}
+
+// The lines a given client gets: the chosen categories, controls first so
+// `unbindall` runs before anything else. OpenJO is the single-player game,
+// whose own settings differ - it only ever takes controls.
+fn shared_lines_for<'a>(store: &'a SharedSettingsStore, client_id: &str) -> Vec<&'a SharedLine> {
+    let mut lines: Vec<&SharedLine> = store
+        .lines
+        .iter()
+        .filter(|l| store.categories.contains(&l.category))
+        .filter(|l| client_id != OPENJO_MOD_ID || l.category == CONTROLS_CATEGORY)
+        .collect();
+    lines.sort_by_key(|l| (l.category != CONTROLS_CATEGORY, l.key != "unbindall"));
+    lines
+}
+
+fn shared_cfg_text(store: &SharedSettingsStore, client_id: &str) -> String {
+    let mut text = String::from("// Written by JK2 Launcher (Config > Shared settings). Edit the source client's settings instead - this file is rewritten at every launch.\n");
+    for l in shared_lines_for(store, client_id) {
+        text.push_str(&l.line);
+        text.push('\n');
+    }
+    text
+}
+
+// Writes (or, with nothing to share, removes) the client's copies. Returns
+// how many were written.
+fn write_shared_cfg(app: &tauri::AppHandle, store: &SharedSettingsStore, client_id: &str) -> Result<usize, String> {
+    let dirs = shared_cfg_dirs(app, client_id);
+    if shared_lines_for(store, client_id).is_empty() || !store.targets.iter().any(|t| t == client_id) {
+        for dir in &dirs {
+            let _ = std::fs::remove_file(dir.join(SHARED_CFG_NAME));
+        }
+        return Ok(0);
+    }
+    let text = shared_cfg_text(store, client_id);
+    let mut written = 0;
+    for dir in &dirs {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        std::fs::write(dir.join(SHARED_CFG_NAME), &text).map_err(|e| e.to_string())?;
+        written += 1;
+    }
+    Ok(written)
+}
+
+// What a client's launch gets on top of its usual arguments. Rewrites the
+// file first, so a launch always runs the current shared settings.
+fn shared_settings_args(app: &tauri::AppHandle, client_id: &str) -> Vec<String> {
+    let store = load_shared_settings(app);
+    match write_shared_cfg(app, &store, client_id) {
+        Ok(n) if n > 0 => vec!["+exec".to_string(), SHARED_CFG_NAME.to_string()],
+        _ => Vec::new(),
+    }
+}
+
+#[derive(serde::Serialize)]
+struct SharedCategoryCount {
+    id: &'static str,
+    count: usize,
+}
+
+#[derive(serde::Serialize)]
+struct SharedClientInfo {
+    id: &'static str,
+    cfg_path: Option<String>,
+    // Lines that would change this client's current settings, once it has
+    // a config to compare with.
+    changes: Option<usize>,
+}
+
+#[derive(serde::Serialize)]
+struct SharedSettingsView {
+    source: Option<String>,
+    pulled_at: u64,
+    categories: Vec<String>,
+    targets: Vec<String>,
+    available: Vec<SharedCategoryCount>,
+    clients: Vec<SharedClientInfo>,
+    preview: Vec<String>,
+}
+
+fn shared_settings_view(app: &tauri::AppHandle, store: &SharedSettingsStore) -> SharedSettingsView {
+    let category_ids = std::iter::once(CONTROLS_CATEGORY).chain(SHARED_CATEGORIES.iter().map(|(id, _)| *id));
+    let available = category_ids
+        .map(|id| SharedCategoryCount { id, count: store.lines.iter().filter(|l| l.category == id && l.key != "unbindall").count() })
+        .collect();
+    let clients = PK3_CLIENT_IDS
+        .iter()
+        .map(|id| {
+            let cfg_path = find_client_cfg(app, id);
+            let changes = cfg_path.as_ref().and_then(|_| read_client_cfgs(app, id).ok()).map(|text| {
+                let current: std::collections::HashMap<String, String> =
+                    extract_shared_lines(&text).into_iter().map(|l| (l.key, l.line)).collect();
+                shared_lines_for(store, id)
+                    .iter()
+                    .filter(|l| l.key != "unbindall" && current.get(&l.key) != Some(&l.line))
+                    .count()
+            });
+            SharedClientInfo { id, cfg_path: cfg_path.map(|p| p.to_string_lossy().to_string()), changes }
+        })
+        .collect();
+    // The preview shows a multiplayer client's version - the fuller one.
+    let preview = shared_lines_for(store, TOMMYTERNAL_MOD_ID).iter().map(|l| l.line.clone()).collect();
+    SharedSettingsView {
+        source: store.source.clone(),
+        pulled_at: store.pulled_at,
+        categories: store.categories.clone(),
+        targets: store.targets.clone(),
+        available,
+        clients,
+        preview,
+    }
+}
+
+#[tauri::command]
+fn get_shared_settings(app: tauri::AppHandle) -> SharedSettingsView {
+    shared_settings_view(&app, &load_shared_settings(&app))
+}
+
+#[tauri::command]
+fn pull_shared_settings(app: tauri::AppHandle, source: String) -> Result<SharedSettingsView, String> {
+    if !PK3_CLIENT_IDS.contains(&source.as_str()) {
+        return Err(format!("Unknown client: {source}"));
+    }
+    let text = read_client_cfgs(&app, &source)?;
+    let mut store = load_shared_settings(&app);
+    store.lines = extract_shared_lines(&text);
+    store.source = Some(source.clone());
+    store.pulled_at = now_secs();
+    // First pull: share the usual things, to every multiplayer client but
+    // not the source itself (it already has them).
+    if store.categories.is_empty() {
+        store.categories = vec!["controls".into(), "mouse_view".into(), "video".into(), "audio".into()];
+    }
+    if store.targets.is_empty() {
+        store.targets = PK3_CLIENT_IDS.iter().map(|s| s.to_string()).filter(|id| id != &source && id != OPENJO_MOD_ID).collect();
+    }
+    save_shared_settings_store(&app, &store)?;
+    Ok(shared_settings_view(&app, &store))
+}
+
+#[tauri::command]
+fn save_shared_settings(app: tauri::AppHandle, categories: Vec<String>, targets: Vec<String>) -> Result<SharedSettingsView, String> {
+    let known_categories: Vec<&str> = std::iter::once(CONTROLS_CATEGORY).chain(SHARED_CATEGORIES.iter().map(|(id, _)| *id)).collect();
+    if let Some(bad) = categories.iter().find(|c| !known_categories.contains(&c.as_str())) {
+        return Err(format!("Unknown category: {bad}"));
+    }
+    if let Some(bad) = targets.iter().find(|t| !PK3_CLIENT_IDS.contains(&t.as_str())) {
+        return Err(format!("Unknown client: {bad}"));
+    }
+    let mut store = load_shared_settings(&app);
+    store.categories = categories;
+    store.targets = targets;
+    save_shared_settings_store(&app, &store)?;
+    Ok(shared_settings_view(&app, &store))
+}
+
+// Writes every client's copy right now - for anyone who launches a client
+// without the launcher and runs `exec launcher_shared.cfg` themselves.
+// Launches from here rewrite it anyway (see shared_settings_args).
+#[tauri::command]
+fn apply_shared_settings(app: tauri::AppHandle) -> Result<String, String> {
+    let store = load_shared_settings(&app);
+    let mut clients = 0;
+    for id in PK3_CLIENT_IDS {
+        if write_shared_cfg(&app, &store, id)? > 0 {
+            clients += 1;
+        }
+    }
+    Ok(match clients {
+        0 => "Nothing to write - pick a source and at least one client".to_string(),
+        1 => "Written for 1 client".to_string(),
+        n => format!("Written for {n} clients"),
+    })
+}
+
 // --- Media: screenshots and demos -------------------------------------------
 // A client doesn't save these in one predictable place. It writes into
 // whichever game dir is active (base/, or its launchermods_ folder once it
@@ -2193,6 +2539,7 @@ fn play_demo(app: tauri::AppHandle, client_id: String, path: String) -> Result<S
     } else if client_has_pk3_mods(&game_root, &client_id) {
         args.extend(["+set".to_string(), "fs_game".to_string(), client_mod_folder_name(&client_id)]);
     }
+    args.extend(shared_settings_args(&app, &client_id));
     // The name becomes part of a console command line. The client splits
     // those on ';' and reads '"' as quoting, so a file named with either
     // (one renamed outside the launcher - rename_demo refuses both) could
@@ -2388,6 +2735,10 @@ pub fn run() {
             trash_media,
             rename_demo,
             play_demo,
+            get_shared_settings,
+            pull_shared_settings,
+            save_shared_settings,
+            apply_shared_settings,
             query_server_status
         ])
         .run(tauri::generate_context!())

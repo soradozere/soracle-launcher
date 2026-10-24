@@ -841,6 +841,7 @@ button.change-folder:hover {
   align-items: center;
   gap: 1rem;
   flex-wrap: wrap;
+  max-width: 68rem;
   margin: 0 0 1.6rem;
 }
 
@@ -849,13 +850,12 @@ button.change-folder:hover {
   color: var(--text-dim);
 }
 
-/* CTF page: the way out to the full site, under sign-in (or your stats). */
+/* CTF page: the way out to the full site, far right of the Play CTF row. */
 .ctf-site-btn {
-  display: flex;
-  width: fit-content;
+  display: inline-flex;
   align-items: center;
   gap: 0.45rem;
-  margin: 0.9rem 0 2rem;
+  margin-left: auto;
   padding: 0.6rem 1.3rem;
   font-family: var(--font-heading);
   font-size: 0.85rem;
@@ -2212,4 +2212,99 @@ button.change-folder:hover {
 
 .media-viewer-nav:hover {
   border-color: var(--border-hover);
+}
+
+/* Config: shared settings */
+
+.config-source-row,
+.config-apply-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin: 0 0 1.4rem;
+}
+
+.config-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  max-width: 40rem;
+  margin: 0 0 1.4rem;
+}
+
+.config-row {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  padding: 0.6rem 0.9rem;
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.config-row:hover {
+  border-color: var(--border-hover);
+}
+
+.config-row.on {
+  border-color: rgba(102, 252, 241, 0.45);
+}
+
+.config-row--muted {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.config-row input {
+  accent-color: var(--primary);
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  flex-shrink: 0;
+}
+
+.config-row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.config-row-title {
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--text-bright);
+}
+
+.config-row-detail {
+  font-size: 0.74rem;
+  color: var(--text-dim);
+}
+
+.config-row-count {
+  flex-shrink: 0;
+  font-family: "SF Mono", ui-monospace, Menlo, monospace;
+  font-size: 0.72rem;
+  color: var(--text-dim);
+}
+
+.config-row.on .config-row-count {
+  color: var(--primary-dim);
+}
+
+.config-preview {
+  max-width: 40rem;
+  margin: 0 0 1rem;
+  padding: 0.7rem 0.9rem;
+  font-family: "SF Mono", ui-monospace, Menlo, monospace;
+  font-size: 0.72rem;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow-x: auto;
 }
